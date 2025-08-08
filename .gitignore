@@ -1,0 +1,42 @@
+﻿# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Editors/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local data & builds
+*.db
+*.sqlite*
+*.sqlite3
+*.log
+dist/
+build/
+
+# FastAPI/UVicorn artifacts (if any)
+*.pid
+
+# Environment & secrets
+.env
+.env.*.local
+.env.local
+
+# Node bits (if you add a frontend later)
+node_modules/
+
+# Local helpers
+debug_metadata.py
+tree_all.txt
