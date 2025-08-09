@@ -1,16 +1,23 @@
-name: CI
+name: CI / tests
 
 on:
-  push:
-    branches: ["**"]
   pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   tests:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,21 +26,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: "pip"
+
+      - name: Upgrade pip tooling
+        run: python -m pip install --upgrade pip setuptools wheel
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          else
-            # Fallback minimal deps for tests if no requirements.txt present
-            pip install "fastapi>=0.110" "uvicorn>=0.23" "sqlalchemy>=2.0" "pydantic>=2.0" \
-                        "python-jose[cryptography]>=3.3.0" "passlib[bcrypt]>=1.7" "httpx>=0.24"
-          fi
-          pip install pytest
+        run: pip install -r requirements.txt
 
       - name: Run tests
         env:
-          PYTHONPATH: ${{ github.workspace }}
+          PYTHONPATH: .
         run: pytest -q

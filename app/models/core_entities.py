@@ -1,3 +1,4 @@
+# File: /app/models/core_entities.py | Version: 1.5 | Path: /app/models/core_entities.py
 from __future__ import annotations
 
 from datetime import datetime, UTC
@@ -173,7 +174,7 @@ class TaskTag(Base):
     tag: Mapped["Tag"] = relationship(back_populates="tasks")
 
 
-# ---- Watchers (new) ----
+# ---- Watchers ----
 class TaskWatcher(Base):
     __tablename__ = "task_watcher"
     __table_args__ = (UniqueConstraint("task_id", "user_id", name="uq_task_watcher_task_user"),)
@@ -186,5 +187,5 @@ class TaskWatcher(Base):
     user: Mapped["User"] = relationship(back_populates="task_watchers")
 
 
-# ----- Performance index (non-redundant composite) -----
+# Helpful composite index for comment listing
 Index("ix_comment_task_id_created_at", Comment.task_id, Comment.created_at)
