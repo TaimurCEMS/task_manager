@@ -1,84 +1,93 @@
-# File: app/schemas/core_entities.py | Version: 1.0 | Path: /app/schemas/core_entities.py
-from pydantic import BaseModel, Field
+# File: /app/schemas/core_entities.py | Version: 2.0
+from __future__ import annotations
+
 from typing import Optional
-from uuid import UUID
 from datetime import datetime
 
-# Shared base for all create/update actions
-class WorkspaceBase(BaseModel):
-    name: str = Field(..., max_length=100)
-
-class WorkspaceCreate(WorkspaceBase):
-    pass
-
-class WorkspaceUpdate(WorkspaceBase):
-    pass
-
-class WorkspaceOut(WorkspaceBase):
-    id: UUID
-    owner_id: UUID
-    created_at: datetime
-    updated_at: datetime
-
-    class Config:
-        orm_mode = True
+from pydantic import BaseModel, ConfigDict
 
 
-class SpaceBase(BaseModel):
-    name: str = Field(..., max_length=100)
-    is_private: Optional[bool] = False
+# -------------------- Workspace --------------------
 
-class SpaceCreate(SpaceBase):
-    workspace_id: UUID
-
-class SpaceUpdate(SpaceBase):
-    pass
-
-class SpaceOut(SpaceBase):
-    id: UUID
-    workspace_id: UUID
-    created_at: datetime
-    updated_at: datetime
-
-    class Config:
-        orm_mode = True
+class WorkspaceCreate(BaseModel):
+    name: str
 
 
-class FolderBase(BaseModel):
-    name: str = Field(..., max_length=100)
-
-class FolderCreate(FolderBase):
-    space_id: UUID
-
-class FolderUpdate(FolderBase):
-    pass
-
-class FolderOut(FolderBase):
-    id: UUID
-    space_id: UUID
-    created_at: datetime
-    updated_at: datetime
-
-    class Config:
-        orm_mode = True
+class WorkspaceUpdate(BaseModel):
+    name: Optional[str] = None
 
 
-class ListBase(BaseModel):
-    name: str = Field(..., max_length=100)
+class WorkspaceOut(BaseModel):
+    id: str
+    name: str
+    owner_id: str
+    # Make timestamps optional so ResponseValidationError doesn't occur if the model lacks them
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
-class ListCreate(ListBase):
-    space_id: UUID
-    folder_id: Optional[UUID] = None
+    model_config = ConfigDict(from_attributes=True)
 
-class ListUpdate(ListBase):
-    pass
 
-class ListOut(ListBase):
-    id: UUID
-    space_id: UUID
-    folder_id: Optional[UUID]
-    created_at: datetime
-    updated_at: datetime
+# -------------------- Space --------------------
 
-    class Config:
-        orm_mode = True
+class SpaceCreate(BaseModel):
+    name: str
+    workspace_id: str
+
+
+class SpaceUpdate(BaseModel):
+    name: Optional[str] = None
+
+
+class SpaceOut(BaseModel):
+    id: str
+    name: str
+    workspace_id: str
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# -------------------- Folder --------------------
+
+class FolderCreate(BaseModel):
+    name: str
+    space_id: str
+
+
+class FolderUpdate(BaseModel):
+    name: Optional[str] = None
+
+
+class FolderOut(BaseModel):
+    id: str
+    name: str
+    space_id: str
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# -------------------- List --------------------
+
+class ListCreate(BaseModel):
+    name: str
+    space_id: str
+    folder_id: Optional[str] = None
+
+
+class ListUpdate(BaseModel):
+    name: Optional[str] = None
+
+
+class ListOut(BaseModel):
+    id: str
+    name: str
+    space_id: str
+    folder_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
