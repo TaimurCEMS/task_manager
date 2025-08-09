@@ -30,21 +30,8 @@ jobs:
       - name: Upgrade pip tooling
         run: python -m pip install --upgrade pip setuptools wheel
 
-      # If there's no requirements file, install a minimal set to run tests
       - name: Install dependencies
-        shell: bash
-        run: |
-          if [ -f requirements-dev.txt ]; then
-            pip install -r requirements-dev.txt
-          elif [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          else
-            pip install \
-              "fastapi>=0.110" "uvicorn[standard]>=0.23" \
-              "pydantic>=2,<3" "sqlalchemy>=2.0.0" \
-              "python-jose[cryptography]>=3.3" "passlib[bcrypt]>=1.7" \
-              "python-multipart>=0.0.6" "email-validator>=2.0" \
-              "pytest>=7" "httpx>=0.24"
+        run: pip install -r requirements.txt
 
       - name: Run tests
         env:
