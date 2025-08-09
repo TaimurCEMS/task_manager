@@ -1,11 +1,11 @@
-# File: /app/models/core_entities.py | Version: 1.2 | Path: /app/models/core_entities.py
+#File: /app/models/core_entities.py | Version: 1.4 | Path: /app/models/core_entities.py
 from __future__ import annotations
 
 from datetime import datetime, UTC
 from typing import List as TList, Optional
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
@@ -22,9 +22,7 @@ class User(Base):
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[Optional[str]] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC)
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
     )
@@ -96,7 +94,6 @@ class Task(Base):
     __tablename__ = "task"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
     list_id: Mapped[str] = mapped_column(ForeignKey("list.id"), index=True, nullable=False)
-    # --- Subtasks ---
     parent_task_id: Mapped[Optional[str]] = mapped_column(ForeignKey("task.id"), index=True, nullable=True)
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -104,26 +101,14 @@ class Task(Base):
     status: Mapped[str] = mapped_column(String(50), default="to_do")
     priority: Mapped[Optional[str]] = mapped_column(String(20))
     due_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC)
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
     )
 
-    # Relationships
     list: Mapped["List"] = relationship(back_populates="tasks")
-    # Self-referential subtask relations
-    parent: Mapped[Optional["Task"]] = relationship(
-        "Task",
-        remote_side=lambda: [Task.id],
-        back_populates="children",
-    )
-    children: Mapped[TList["Task"]] = relationship(
-        "Task",
-        back_populates="parent",
-        cascade="all, delete-orphan",
-    )
+    parent: Mapped[Optional["Task"]] = relationship("Task", remote_side=lambda: [Task.id], back_populates="children")
+    children: Mapped[TList["Task"]] = relationship("Task", back_populates="parent", cascade="all, delete-orphan")
 
     comments: Mapped[TList["Comment"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     time_entries: Mapped[TList["TimeEntry"]] = relationship(back_populates="task", cascade="all, delete-orphan")
@@ -137,9 +122,7 @@ class Comment(Base):
     task_id: Mapped[str] = mapped_column(ForeignKey("task.id"), index=True, nullable=False)
     user_id: Mapped[str] = mapped_column(ForeignKey("user.id"), index=True, nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC)
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
     user: Mapped["User"] = relationship(back_populates="comments")
     task: Mapped["Task"] = relationship(back_populates="comments")
@@ -152,9 +135,7 @@ class TimeEntry(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("user.id"), index=True, nullable=False)
     minutes: Mapped[int] = mapped_column(Integer, default=0)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC)
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
     user: Mapped["User"] = relationship(back_populates="time_entries")
     task: Mapped["Task"] = relationship(back_populates="time_entries")
@@ -170,6 +151,7 @@ class TaskAssignee(Base):
     task: Mapped["Task"] = relationship(back_populates="assignees")
 
 
+# ---- Tags (Phase 5 scaffolding already present) ----
 class Tag(Base):
     __tablename__ = "tag"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
@@ -188,3 +170,8 @@ class TaskTag(Base):
 
     task: Mapped["Task"] = relationship(back_populates="tags")
     tag: Mapped["Tag"] = relationship(back_populates="tasks")
+
+
+# ----- Performance indexes (keep only non-redundant composite) -----
+# Single-column indexes already exist via `index=True` on the mapped columns above.
+Index("ix_comment_task_id_created_at", Comment.task_id, Comment.created_at)
