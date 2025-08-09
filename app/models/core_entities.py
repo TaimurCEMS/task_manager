@@ -1,11 +1,11 @@
-#File: /app/models/core_entities.py | Version: 1.4 | Path: /app/models/core_entities.py
+# File: /app/models/core_entities.py | Version: 1.5 | Path: /app/models/core_entities.py
 from __future__ import annotations
 
 from datetime import datetime, UTC
 from typing import List as TList, Optional
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Index
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Index, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base_class import Base
@@ -31,6 +31,7 @@ class User(Base):
     time_entries: Mapped[TList["TimeEntry"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     task_assignees: Mapped[TList["TaskAssignee"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     workspaces: Mapped[TList["WorkspaceMember"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    task_watchers: Mapped[TList["TaskWatcher"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class Workspace(Base):
@@ -114,6 +115,7 @@ class Task(Base):
     time_entries: Mapped[TList["TimeEntry"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     assignees: Mapped[TList["TaskAssignee"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     tags: Mapped[TList["TaskTag"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+    watchers: Mapped[TList["TaskWatcher"]] = relationship(back_populates="task", cascade="all, delete-orphan")
 
 
 class Comment(Base):
@@ -151,7 +153,7 @@ class TaskAssignee(Base):
     task: Mapped["Task"] = relationship(back_populates="assignees")
 
 
-# ---- Tags (Phase 5 scaffolding already present) ----
+# ---- Tags ----
 class Tag(Base):
     __tablename__ = "tag"
     id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
@@ -172,6 +174,18 @@ class TaskTag(Base):
     tag: Mapped["Tag"] = relationship(back_populates="tasks")
 
 
-# ----- Performance indexes (keep only non-redundant composite) -----
-# Single-column indexes already exist via `index=True` on the mapped columns above.
+# ---- Watchers ----
+class TaskWatcher(Base):
+    __tablename__ = "task_watcher"
+    __table_args__ = (UniqueConstraint("task_id", "user_id", name="uq_task_watcher_task_user"),)
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
+    task_id: Mapped[str] = mapped_column(ForeignKey("task.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(ForeignKey("user.id"), index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+    task: Mapped["Task"] = relationship(back_populates="watchers")
+    user: Mapped["User"] = relationship(back_populates="task_watchers")
+
+
+# Helpful composite index for comment listing
 Index("ix_comment_task_id_created_at", Comment.task_id, Comment.created_at)
