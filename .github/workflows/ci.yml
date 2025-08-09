@@ -22,17 +22,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: "pip"
 
       - name: Upgrade pip tooling
         run: python -m pip install --upgrade pip setuptools wheel
 
-      # Install deps (handles either requirements-dev.txt or requirements.txt;
-      # if neither exists, installs a minimal set that matches this repo)
+      # If there's no requirements file, install a minimal set to run tests
       - name: Install dependencies
         shell: bash
         run: |
@@ -47,7 +45,6 @@ jobs:
               "python-jose[cryptography]>=3.3" "passlib[bcrypt]>=1.7" \
               "python-multipart>=0.0.6" "email-validator>=2.0" \
               "pytest>=7" "httpx>=0.24"
-          fi
 
       - name: Run tests
         env:
