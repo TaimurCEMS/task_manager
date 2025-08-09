@@ -1,0 +1,4397 @@
+﻿# File: app/__init__.py | Version: 1.0 | Path: /app/__init__.py
+__version__ = "1.0"
+
+
+
+
+
+# File: /app/core/permissions.py | Version: 1.1
+from __future__ import annotations
+
+from enum import Enum
+from typing import Optional, Callable, Any
+
+from fastapi import Depends, HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.db.session import get_db
+from app.security import get_current_user
+from app.models.core_entities import WorkspaceMember, User  # type: ignore
+
+
+class Role(str, Enum):
+    OWNER = "Owner"
+    ADMIN = "Admin"
+    MEMBER = "Member"
+    GUEST = "Guest"
+
+
+# Lowest â†’ Highest
+ROLE_ORDER = [Role.GUEST, Role.MEMBER, Role.ADMIN, Role.OWNER]
+ROLE_RANK = {r: i for i, r in enumerate(ROLE_ORDER)}
+
+
+def _normalize_role(value: str | Role | None) -> Optional[Role]:
+    if value is None:
+        return None
+    if isinstance(value, Role):
+        return value
+    try:
+        normalized = value.strip().lower()
+    except AttributeError:
+        return None
+    for r in Role:
+        if r.value.lower() == normalized:
+            return r
+    return None
+
+
+def get_workspace_role(
+    db: Session, *, user_id: Any, workspace_id: Any
+) -> Optional[Role]:
+    """
+    Return the user's Role in a workspace, or None if not a member.
+    """
+    wm = (
+        db.query(WorkspaceMember)
+        .filter(
+            WorkspaceMember.user_id == user_id,
+            WorkspaceMember.workspace_id == workspace_id,
+        )
+        .first()
+    )
+    return _normalize_role(getattr(wm, "role", None))
+
+
+def has_min_role(
+    db: Session,
+    *,
+    user_id: Any,
+    workspace_id: Any,
+    minimum: Role,
+) -> bool:
+    """
+    True iff the user has membership in the workspace AND their role rank >= minimum.
+    """
+    current = get_workspace_role(db, user_id=user_id, workspace_id=workspace_id)
+    if current is None:
+        return False
+    return ROLE_RANK[current] >= ROLE_RANK[minimum]
+
+
+def require_role(
+    db: Session,
+    *,
+    user_id: Any,
+    workspace_id: Any,
+    minimum: Role,
+    message: Optional[str] = None,
+) -> Role:
+    """
+    Enforce that the user has at least `minimum` role. Raises 403 if not.
+    Returns the resolved Role on success.
+    """
+    resolved = get_workspace_role(db, user_id=user_id, workspace_id=workspace_id)
+    if resolved is None or ROLE_RANK[resolved] < ROLE_RANK[minimum]:
+        detail = message or (
+            f"Requires role '{minimum.value}' or higher in workspace {workspace_id}."
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+    return resolved
+
+
+# ----- Convenience checks aligned with the role matrix -----
+
+def can_manage_workspace(db: Session, *, user_id: Any, workspace_id: Any) -> bool:
+    # Admin+ can manage workspace-level settings and members
+    return has_min_role(db, user_id=user_id, workspace_id=workspace_id, minimum=Role.ADMIN)
+
+
+def can_edit_content(db: Session, *, user_id: Any, workspace_id: Any) -> bool:
+    # Member+ can create/edit content within accessible spaces/lists
+    return has_min_role(db, user_id=user_id, workspace_id=workspace_id, minimum=Role.MEMBER)
+
+
+def can_view_workspace(db: Session, *, user_id: Any, workspace_id: Any) -> bool:
+    # Any membership grants view; guests via explicit shares (handled elsewhere)
+    role = get_workspace_role(db, user_id=user_id, workspace_id=workspace_id)
+    return role is not None
+
+
+# ----- FastAPI dependency factory -----
+def require_workspace_role_dependency(minimum: Role) -> Callable:
+    """
+    Example:
+      @router.post("/workspaces/{workspace_id}/spaces",
+                   dependencies=[Depends(require_workspace_role_dependency(Role.MEMBER))])
+    """
+    def _dep(
+        workspace_id: int,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(get_current_user),
+    ) -> None:
+        require_role(
+            db,
+            user_id=current_user.id,
+            workspace_id=workspace_id,
+            minimum=minimum,
+        )
+
+    return _dep
+
+
+# ===== Back-compat shims (used by existing routers) =====
+# These keep older imports working while we migrate.
+# Prefer the newer helpers above in new code.
+
+def get_user_role_for_workspace(db: Session, user_id: Any, workspace_id: Any) -> Optional[str]:
+    """
+    OLD NAME â€” use get_workspace_role() instead.
+    Returns the role as a string (e.g., 'Owner') or None if not a member.
+    """
+    r = get_workspace_role(db, user_id=user_id, workspace_id=workspace_id)
+    return r.value if r else None
+
+
+def check_permission(
+    db: Session,
+    *,
+    user_id: Any,
+    workspace_id: Any,
+    action: str,
+) -> bool:
+    """
+    OLD API â€” returns bool. Newer code should use require_role()/dependency.
+    Supported actions (case-insensitive):
+      - 'manage_workspace', 'manage_members', 'workspace_settings' -> Admin+
+      - 'edit', 'create', 'update', 'delete', 'edit_content', 'write' -> Member+
+      - 'view', 'read', 'view_workspace' -> any member
+    Unknown actions -> False (conservative).
+    """
+    a = (action or "").strip().lower()
+    if a in {"manage_workspace", "manage_members", "workspace_settings"}:
+        return can_manage_workspace(db, user_id=user_id, workspace_id=workspace_id)
+    if a in {"edit", "create", "update", "delete", "edit_content", "write"}:
+        return can_edit_content(db, user_id=user_id, workspace_id=workspace_id)
+    if a in {"view", "read", "view_workspace"}:
+        return can_view_workspace(db, user_id=user_id, workspace_id=workspace_id)
+    return False
+
+
+
+
+
+# File: /app/crud/__init__.py | Version: 1.3 | Path: /app/crud/__init__.py
+from . import core_entities, task, comments, tags, watchers
+
+__all__ = ["core_entities", "task", "comments", "tags", "watchers"]
+
+
+
+
+
+# File: /app/crud/comments.py | Version: 1.2 | Path: /app/crud/comments.py
+from __future__ import annotations
+
+from typing import List, Optional
+from uuid import UUID
+
+from sqlalchemy.orm import Session
+
+from app.models import core_entities as models
+
+
+def create_comment(db: Session, *, task_id: UUID, user_id: str, body: str) -> models.Comment:
+    try:
+        comment = models.Comment(
+            task_id=str(task_id),
+            user_id=user_id,
+            body=body,
+        )
+        db.add(comment)
+        db.commit()
+        db.refresh(comment)
+        return comment
+    except Exception:
+        db.rollback()
+        raise
+
+
+def get_comment(db: Session, *, comment_id: UUID) -> Optional[models.Comment]:
+    # SQLAlchemy 2.0 style
+    return db.get(models.Comment, str(comment_id))
+
+
+def get_comments_for_task(
+    db: Session, *, task_id: UUID, limit: Optional[int] = None, offset: Optional[int] = None
+) -> List[models.Comment]:
+    q = (
+        db.query(models.Comment)
+        .filter(models.Comment.task_id == str(task_id))
+        .order_by(models.Comment.created_at.asc())
+    )
+    if offset:
+        q = q.offset(offset)
+    if limit:
+        q = q.limit(limit)
+    return q.all()
+
+
+def update_comment(db: Session, *, comment_id: UUID, body: str) -> Optional[models.Comment]:
+    comment = db.get(models.Comment, str(comment_id))
+    if not comment:
+        return None  # caller handles 404
+    try:
+        comment.body = body
+        db.add(comment)
+        db.commit()
+        db.refresh(comment)
+        return comment
+    except Exception:
+        db.rollback()
+        raise
+
+
+def delete_comment(db: Session, *, comment_id: UUID) -> bool:
+    comment = db.get(models.Comment, str(comment_id))
+    if not comment:
+        return False
+    try:
+        db.delete(comment)
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        raise
+
+
+
+
+
+# File: /app/crud/core_entities.py | Version: 1.6 | Path: /app/crud/core_entities.py
+from typing import List, Optional
+from uuid import UUID
+
+from sqlalchemy.orm import Session
+
+from app.schemas import core_entities as schema
+from app.models import core_entities as models
+
+
+# ----- WORKSPACE CRUD -----
+
+def create_workspace(db: Session, data: schema.WorkspaceCreate, owner_id: str):
+    """
+    Create the workspace AND insert a WorkspaceMember record with Owner role.
+    """
+    try:
+        new_workspace = models.Workspace(
+            name=data.name,
+            owner_id=owner_id,
+        )
+        db.add(new_workspace)
+        db.commit()
+        db.refresh(new_workspace)
+
+        # Ensure membership is recorded per ERD (WorkspaceMember link)
+        owner_membership = models.WorkspaceMember(
+            workspace_id=new_workspace.id,
+            user_id=owner_id,
+            role="Owner",
+            is_active=True,
+        )
+        db.add(owner_membership)
+        db.commit()
+        return new_workspace
+    except Exception:
+        db.rollback()
+        raise
+
+
+def get_workspace(db: Session, workspace_id: UUID):
+    q = db.query(models.Workspace).filter_by(id=str(workspace_id))
+    if hasattr(models.Workspace, "is_deleted"):
+        q = q.filter(models.Workspace.is_deleted == False)  # noqa: E712
+    return q.first()
+
+
+def get_workspaces_for_user(db: Session, user_id: str):
+    """
+    Return all workspaces the user is a member of (any role), not only owned ones.
+    """
+    q = (
+        db.query(models.Workspace)
+        .join(
+            models.WorkspaceMember,
+            models.Workspace.id == models.WorkspaceMember.workspace_id,
+        )
+        .filter(
+            models.WorkspaceMember.user_id == user_id,
+            models.WorkspaceMember.is_active == True,  # noqa: E712
+        )
+        .distinct()
+    )
+    if hasattr(models.Workspace, "is_deleted"):
+        q = q.filter(models.Workspace.is_deleted == False)  # noqa: E712
+    return q.all()
+
+
+def update_workspace(db: Session, workspace_id: UUID, data: schema.WorkspaceUpdate):
+    db_obj = get_workspace(db, workspace_id)
+    if not db_obj:
+        return None
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(db_obj, field, value)
+    db.commit()
+    db.refresh(db_obj)
+    return db_obj
+
+
+def delete_workspace(db: Session, workspace_id: UUID):
+    db_obj = get_workspace(db, workspace_id)
+    if not db_obj:
+        return None
+    # Soft delete if supported; otherwise hard delete
+    if hasattr(db_obj, "is_deleted"):
+        setattr(db_obj, "is_deleted", True)
+        db.commit()
+    else:
+        db.delete(db_obj)
+        db.commit()
+    return db_obj
+
+
+# ----- SPACE CRUD -----
+
+def create_space(db: Session, data: schema.SpaceCreate):
+    new_space = models.Space(**data.model_dump())
+    db.add(new_space)
+    db.commit()
+    db.refresh(new_space)
+    return new_space
+
+
+def get_space(db: Session, space_id: UUID):
+    q = db.query(models.Space).filter_by(id=str(space_id))
+    if hasattr(models.Space, "is_deleted"):
+        q = q.filter(models.Space.is_deleted == False)  # noqa: E712
+    return q.first()
+
+
+def get_spaces_by_workspace(db: Session, workspace_id: str):
+    q = db.query(models.Space).filter_by(workspace_id=workspace_id)
+    if hasattr(models.Space, "is_deleted"):
+        q = q.filter(models.Space.is_deleted == False)  # noqa: E712
+    return q.all()
+
+
+def update_space(db: Session, space_id: UUID, data: schema.SpaceUpdate):
+    db_obj = get_space(db, space_id)
+    if not db_obj:
+        return None
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(db_obj, field, value)
+    db.commit()
+    db.refresh(db_obj)
+    return db_obj
+
+
+def delete_space(db: Session, space_id: UUID):
+    db_obj = get_space(db, space_id)
+    if not db_obj:
+        return None
+    if hasattr(db_obj, "is_deleted"):
+        db_obj.is_deleted = True
+        db.commit()
+    else:
+        db.delete(db_obj)
+        db.commit()
+    return db_obj
+
+
+# ----- FOLDER CRUD -----
+
+def create_folder(db: Session, data: schema.FolderCreate):
+    new_folder = models.Folder(**data.model_dump())
+    db.add(new_folder)
+    db.commit()
+    db.refresh(new_folder)
+    return new_folder
+
+
+def get_folder(db: Session, folder_id: UUID):
+    q = db.query(models.Folder).filter_by(id=str(folder_id))
+    if hasattr(models.Folder, "is_deleted"):
+        q = q.filter(models.Folder.is_deleted == False)  # noqa: E712
+    return q.first()
+
+
+def get_folders_by_space(db: Session, space_id: str):
+    q = db.query(models.Folder).filter_by(space_id=space_id)
+    if hasattr(models.Folder, "is_deleted"):
+        q = q.filter(models.Folder.is_deleted == False)  # noqa: E712
+    return q.all()
+
+
+def update_folder(db: Session, folder_id: UUID, data: schema.FolderUpdate):
+    db_obj = get_folder(db, folder_id)
+    if not db_obj:
+        return None
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(db_obj, field, value)
+    db.commit()
+    db.refresh(db_obj)
+    return db_obj
+
+
+def delete_folder(db: Session, folder_id: UUID):
+    db_obj = get_folder(db, folder_id)
+    if not db_obj:
+        return None
+    if hasattr(db_obj, "is_deleted"):
+        db_obj.is_deleted = True
+        db.commit()
+    else:
+        db.delete(db_obj)
+        db.commit()
+    return db_obj
+
+
+# ----- LIST CRUD -----
+
+def create_list(db: Session, data: schema.ListCreate):
+    new_list = models.List(**data.model_dump())
+    db.add(new_list)
+    db.commit()
+    db.refresh(new_list)
+    return new_list
+
+
+def get_list(db: Session, list_id: UUID):
+    q = db.query(models.List).filter_by(id=str(list_id))
+    if hasattr(models.List, "is_deleted"):
+        q = q.filter(models.List.is_deleted == False)  # noqa: E712
+    return q.first()
+
+
+def get_lists_by_space(db: Session, space_id: str):
+    q = db.query(models.List).filter_by(space_id=space_id)
+    if hasattr(models.List, "is_deleted"):
+        q = q.filter(models.List.is_deleted == False)  # noqa: E712
+    return q.all()
+
+
+def get_lists_by_folder(db: Session, folder_id: str):
+    q = db.query(models.List).filter_by(folder_id=folder_id)
+    if hasattr(models.List, "is_deleted"):
+        q = q.filter(models.List.is_deleted == False)  # noqa: E712
+    return q.all()
+
+
+def update_list(db: Session, list_id: UUID, data: schema.ListUpdate):
+    db_obj = get_list(db, list_id)
+    if not db_obj:
+        return None
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(db_obj, field, value)
+    db.commit()
+    db.refresh(db_obj)
+    return db_obj
+
+
+def delete_list(db: Session, list_id: UUID):
+    db_obj = get_list(db, list_id)
+    if not db_obj:
+        return None
+    if hasattr(db_obj, "is_deleted"):
+        db_obj.is_deleted = True
+        db.commit()
+    else:
+        db.delete(db_obj)
+        db.commit()
+    return db_obj
+
+
+
+
+
+# File: /app/crud/filtering.py | Version: 1.0
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Tuple
+from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_, not_, func, select, literal
+from app.schemas.filters import (
+    FilterPayload,
+    FilterOperator,
+    TaskField,
+    TagsMatch,
+)
+from app.models.task import Task
+from app.models.list import List as ListModel
+from app.models.space import Space
+from app.models.workspace import Workspace
+from app.models.tag import Tag
+from app.models.task_tag import TaskTag
+# Optional: if you have assignees in a link table
+try:
+    from app.models.task_assignee import TaskAssignee
+    HAS_ASSIGNEES = True
+except Exception:
+    HAS_ASSIGNEES = False
+
+
+def _apply_scope(q, payload: FilterPayload):
+    s = payload.scope
+    # Joins for hierarchy
+    q = q.join(ListModel, ListModel.id == Task.list_id)\
+         .join(Space, Space.id == ListModel.space_id)\
+         .join(Workspace, Workspace.id == Space.workspace_id)
+
+    if s.list_id:
+        q = q.where(Task.list_id == s.list_id)
+    elif s.folder_id:
+        # Assuming List has folder_id (nullable)
+        q = q.where(ListModel.folder_id == s.folder_id)
+    elif s.space_id:
+        q = q.where(ListModel.space_id == s.space_id)
+    else:
+        # workspace_id
+        q = q.where(Space.workspace_id == s.workspace_id)
+
+    return q
+
+
+def _apply_single_rule(exprs: List, rule, aliases: Dict[str, Any]):
+    field = rule.field
+    op = rule.op
+    val = rule.value
+
+    # Map fields to ORM columns
+    col_map = {
+        TaskField.name: Task.name,
+        TaskField.status: Task.status,
+        TaskField.priority: Task.priority,
+        TaskField.due_date: Task.due_date,
+        TaskField.start_date: Task.start_date,
+    }
+
+    if field == TaskField.assignee_id and HAS_ASSIGNEES:
+        # LEFT EXISTS style filter
+        if op in (FilterOperator.is_empty, FilterOperator.is_not_empty):
+            exists_q = select(TaskAssignee.id).where(TaskAssignee.task_id == Task.id)
+            if op == FilterOperator.is_empty:
+                exprs.append(not_(exists_q.exists()))
+            else:
+                exprs.append(exists_q.exists())
+            return
+        else:
+            # value may be str or list
+            exists_q = select(TaskAssignee.id).where(TaskAssignee.task_id == Task.id)
+            if op in (FilterOperator.eq,):
+                exists_q = exists_q.where(TaskAssignee.user_id == val)
+            elif op in (FilterOperator.in_,):
+                exists_q = exists_q.where(TaskAssignee.user_id.in_(val or []))
+            elif op in (FilterOperator.ne,):
+                exists_q = exists_q.where(TaskAssignee.user_id != val)
+            elif op in (FilterOperator.not_in,):
+                exists_q = exists_q.where(not_(TaskAssignee.user_id.in_(val or [])))
+            exprs.append(exists_q.exists())
+            return
+
+    if field == TaskField.tag_ids:
+        # handled by dedicated tags filter; ignore here
+        return
+
+    col = col_map.get(field)
+    if col is None:
+        return
+
+    if op == FilterOperator.eq:
+        exprs.append(col == val)
+    elif op == FilterOperator.ne:
+        exprs.append(col != val)
+    elif op == FilterOperator.lt:
+        exprs.append(col < val)
+    elif op == FilterOperator.lte:
+        exprs.append(col <= val)
+    elif op == FilterOperator.gt:
+        exprs.append(col > val)
+    elif op == FilterOperator.gte:
+        exprs.append(col >= val)
+    elif op == FilterOperator.contains:
+        exprs.append(func.lower(col).contains(str(val).lower()))
+    elif op == FilterOperator.in_:
+        exprs.append(col.in_(val or []))
+    elif op == FilterOperator.not_in:
+        exprs.append(not_(col.in_(val or [])))
+    elif op == FilterOperator.is_empty:
+        exprs.append(or_(col.is_(None), col == ""))
+    elif op == FilterOperator.is_not_empty:
+        exprs.append(and_(col.is_not(None), col != ""))
+
+
+def _apply_rules(q, payload: FilterPayload) -> Tuple[Any, Optional[Any]]:
+    """
+    Returns (query, tags_having_clause)
+    """
+    exprs: List[Any] = []
+    for r in payload.filters:
+        _apply_single_rule(exprs, r, aliases={})
+
+    if exprs:
+        q = q.where(and_(*exprs))
+
+    tags_having = None
+    if payload.tags and payload.tags.tag_ids:
+        # Build tag filtering using aggregation
+        q = q.outerjoin(TaskTag, TaskTag.task_id == Task.id)
+        q = q.group_by(Task.id)
+
+        if payload.tags.match == TagsMatch.any:
+            # at least one match
+            tags_having = func.count(func.nullif(~TaskTag.tag_id.in_(payload.tags.tag_ids), True)) > 0
+            # Equivalent: COUNT of matching tag rows > 0
+            tags_having = func.count(
+                func.nullif(~TaskTag.tag_id.in_(payload.tags.tag_ids), True)
+            ) > 0
+        else:
+            # ALL: number of distinct matched tags for this task must equal len(tag_ids)
+            tags_having = func.count(func.distinct(
+                func.nullif(TaskTag.tag_id.notin_(payload.tags.tag_ids), None)
+            )) == len(payload.tags.tag_ids)
+
+        q = q.having(tags_having)
+
+    return q, tags_having
+
+
+def build_filtered_query(db: Session, payload: FilterPayload):
+    q = select(Task)
+    q = _apply_scope(q, payload)
+    q, _ = _apply_rules(q, payload)
+    q = q.offset(payload.offset).limit(payload.limit)
+    return q
+
+
+def fetch_tasks(db: Session, payload: FilterPayload) -> List[Task]:
+    q = build_filtered_query(db, payload)
+    return list(db.execute(q).scalars().all())
+
+
+def group_tasks(rows: List[Task], group_by: Optional[str]) -> List[dict]:
+    if not group_by:
+        return [ {"group": None, "tasks": [_to_minimal_dict(t) for t in rows]} ]
+
+    buckets: Dict[str, List[dict]] = {}
+    for t in rows:
+        if group_by == "status":
+            key = t.status or "No Value"
+            buckets.setdefault(key, []).append(_to_minimal_dict(t))
+        elif group_by == "priority":
+            key = t.priority or "No Value"
+            buckets.setdefault(key, []).append(_to_minimal_dict(t))
+        elif group_by == "due_date":
+            key = (t.due_date.isoformat() if getattr(t, "due_date", None) else "No Value")
+            buckets.setdefault(key, []).append(_to_minimal_dict(t))
+        elif group_by == "assignee_id":
+            # If you have many assignees per task, you might duplicate the task across assignees;
+            # for MVP we'll use a single nullable field `assignee_id` if present on Task.
+            key = getattr(t, "assignee_id", None) or "No Value"
+            buckets.setdefault(str(key), []).append(_to_minimal_dict(t))
+        else:
+            # tag grouping (MVP note: requires eager load of tags if you want split-per-tag)
+            key = "Tags"
+            buckets.setdefault(key, []).append(_to_minimal_dict(t))
+
+    return [{"group": k, "tasks": v} for k, v in buckets.items()]
+
+
+def _to_minimal_dict(t: Task) -> Dict[str, Any]:
+    return {
+        "id": t.id,
+        "name": t.name,
+        "status": getattr(t, "status", None),
+        "priority": getattr(t, "priority", None),
+        "due_date": getattr(t, "due_date", None),
+        "start_date": getattr(t, "start_date", None),
+        "list_id": getattr(t, "list_id", None),
+    }
+
+
+
+
+
+# File: /app/crud/tags.py | Version: 1.3 | Path: /app/crud/tags.py
+from __future__ import annotations
+
+from typing import List, Optional
+from uuid import UUID
+
+from sqlalchemy import func, delete
+from sqlalchemy.orm import Session
+
+from app.models import core_entities as models
+
+
+# -------- Tags (workspace-scoped) --------
+
+def create_tag(db: Session, *, workspace_id: UUID, name: str, color: Optional[str]) -> models.Tag:
+    tag = models.Tag(workspace_id=str(workspace_id), name=name, color=color)
+    db.add(tag)
+    db.commit()
+    db.refresh(tag)
+    return tag
+
+
+def get_workspace_tags(db: Session, *, workspace_id: UUID) -> List[models.Tag]:
+    return (
+        db.query(models.Tag)
+        .filter(models.Tag.workspace_id == str(workspace_id))
+        .order_by(models.Tag.name.asc())
+        .all()
+    )
+
+
+def get_tag(db: Session, *, tag_id: UUID | str) -> Optional[models.Tag]:
+    return db.get(models.Tag, str(tag_id))
+
+
+def get_tags_by_ids(db: Session, *, tag_ids: List[UUID]) -> List[models.Tag]:
+    if not tag_ids:
+        return []
+    ids = [str(t) for t in tag_ids]
+    return list(db.query(models.Tag).filter(models.Tag.id.in_(ids)).all())
+
+
+# -------- Task â†” Tag assignment --------
+
+def get_tags_for_task(db: Session, *, task_id: UUID) -> List[models.Tag]:
+    return (
+        db.query(models.Tag)
+        .join(models.TaskTag, models.TaskTag.tag_id == models.Tag.id)
+        .filter(models.TaskTag.task_id == str(task_id))
+        .order_by(models.Tag.name.asc())
+        .all()
+    )
+
+
+def assign_tag_to_task(db: Session, *, task_id: UUID, tag_id: UUID) -> bool:
+    existing = (
+        db.query(models.TaskTag)
+        .filter(
+            models.TaskTag.task_id == str(task_id),
+            models.TaskTag.tag_id == str(tag_id),
+        )
+        .first()
+    )
+    if existing:
+        return False
+    link = models.TaskTag(task_id=str(task_id), tag_id=str(tag_id))
+    db.add(link)
+    db.commit()
+    return True
+
+
+def unassign_tag_from_task(db: Session, *, task_id: UUID, tag_id: UUID) -> bool:
+    link = (
+        db.query(models.TaskTag)
+        .filter(
+            models.TaskTag.task_id == str(task_id),
+            models.TaskTag.tag_id == str(tag_id),
+        )
+        .first()
+    )
+    if not link:
+        return False
+    db.delete(link)
+    db.commit()
+    return True
+
+
+def assign_tags_to_task(db: Session, *, task_id: UUID, tag_ids: List[UUID]) -> int:
+    """Bulk-assign; returns number of new links created."""
+    if not tag_ids:
+        return 0
+    ids = [str(t) for t in tag_ids]
+
+    existing_ids = {
+        row.tag_id
+        for row in db.query(models.TaskTag).filter(
+            models.TaskTag.task_id == str(task_id),
+            models.TaskTag.tag_id.in_(ids),
+        )
+    }
+    to_create = [tid for tid in ids if tid not in existing_ids]
+    if not to_create:
+        return 0
+
+    links = [models.TaskTag(task_id=str(task_id), tag_id=tid) for tid in to_create]
+    db.add_all(links)
+    db.commit()
+    return len(links)
+
+
+def unassign_tags_from_task(db: Session, *, task_id: UUID, tag_ids: List[UUID]) -> int:
+    """Bulk-unassign; returns number of links removed."""
+    if not tag_ids:
+        return 0
+    ids = [str(t) for t in tag_ids]
+    stmt = (
+        delete(models.TaskTag)
+        .where(models.TaskTag.task_id == str(task_id))
+        .where(models.TaskTag.tag_id.in_(ids))
+    )
+    result = db.execute(stmt)
+    db.commit()
+    return result.rowcount or 0
+
+
+def get_tasks_for_tag(db: Session, *, tag_id: UUID) -> List[models.Task]:
+    return (
+        db.query(models.Task)
+        .join(models.TaskTag, models.TaskTag.task_id == models.Task.id)
+        .filter(models.TaskTag.tag_id == str(tag_id))
+        .order_by(models.Task.created_at.desc())
+        .all()
+    )
+
+
+# -------- Multi-tag filtering (workspace-scoped) --------
+
+def get_tasks_by_tags(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    tag_ids: List[UUID],
+    match: str = "any",
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
+) -> List[models.Task]:
+    """
+    Return tasks in a workspace that match multiple tags.
+    match='any' -> task has at least one of the tags
+    match='all' -> task has all of the tags
+    """
+    if not tag_ids:
+        return []
+
+    tag_id_strs = [str(t) for t in tag_ids]
+
+    q = (
+        db.query(models.Task)
+        .join(models.List, models.Task.list_id == models.List.id)
+        .join(models.Space, models.List.space_id == models.Space.id)
+        .filter(models.Space.workspace_id == str(workspace_id))
+        .join(models.TaskTag, models.TaskTag.task_id == models.Task.id)
+        .filter(models.TaskTag.tag_id.in_(tag_id_strs))
+    )
+
+    if match == "all":
+        # Tasks must have all provided tags
+        q = (
+            q.group_by(models.Task.id)
+            .having(func.count(func.distinct(models.TaskTag.tag_id)) == len(tag_id_strs))
+        )
+    else:
+        # match == "any" â€” DB-agnostic approach (avoid DISTINCT ON)
+        q = q.group_by(models.Task.id)
+
+    q = q.order_by(models.Task.created_at.desc())
+
+    if offset:
+        q = q.offset(offset)
+    if limit:
+        q = q.limit(limit)
+
+    return q.all()
+
+
+
+
+
+# File: /app/crud/task.py | Version: 1.5 | Path: /app/crud/task.py
+from __future__ import annotations
+
+from typing import List, Optional
+from uuid import UUID, uuid4
+
+from sqlalchemy.orm import Session
+
+from app.models import core_entities as models
+from app.schemas import task as schema
+
+
+# ---------------------------
+# Core Task CRUD
+# ---------------------------
+
+def create_task(db: Session, data: schema.TaskCreate) -> models.Task:
+    """
+    Create a task. Accepts optional parent_task_id (subtask).
+    Note: Model doesn't store space_id; it's validated in router.
+    """
+    try:
+        task = models.Task(
+            id=str(uuid4()),
+            list_id=str(data.list_id),
+            parent_task_id=str(data.parent_task_id) if data.parent_task_id else None,
+            name=data.name,
+            description=data.description,
+            status=data.status or "to_do",
+            priority=data.priority,
+            due_date=data.due_date,
+            # start_date / time_estimate not persisted in current model
+        )
+        db.add(task)
+        db.commit()
+        db.refresh(task)
+        # Assignees handling can be added later when model supports it
+        return task
+    except Exception:
+        db.rollback()
+        raise
+
+
+def get_task(db: Session, task_id: UUID) -> Optional[models.Task]:
+    return db.query(models.Task).filter_by(id=str(task_id)).first()
+
+
+def get_tasks_by_list(db: Session, list_id: UUID) -> List[models.Task]:
+    return db.query(models.Task).filter_by(list_id=str(list_id)).all()
+
+
+def update_task(db: Session, task_id: UUID, data: schema.TaskUpdate) -> Optional[models.Task]:
+    task = get_task(db, task_id)
+    if not task:
+        return None
+
+    patch = data.model_dump(exclude_unset=True)
+    # Only set attrs that exist on the model
+    for field, value in patch.items():
+        if hasattr(task, field):
+            setattr(task, field, value)
+
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def delete_task(db: Session, task_id: UUID) -> bool:
+    task = get_task(db, task_id)
+    if not task:
+        return False
+    db.delete(task)  # hard delete (no is_deleted field on Task model)
+    db.commit()
+    return True
+
+
+# ---------------------------
+# Subtasks helpers (Sprint 2)
+# ---------------------------
+
+def get_subtasks(db: Session, parent_task_id: UUID) -> List[models.Task]:
+    return db.query(models.Task).filter_by(parent_task_id=str(parent_task_id)).all()
+
+
+def create_subtask(db: Session, parent_task_id: UUID, data: schema.TaskCreate) -> models.Task:
+    """
+    Convenience wrapper to create a subtask under a given parent.
+    Uses the provided TaskCreate (must include list_id and name).
+    """
+    # Ensure parent exists
+    parent = get_task(db, parent_task_id)
+    if not parent:
+        raise ValueError("Parent task not found")
+
+    # Subtask must be in the same list as parent unless you design for cross-list
+    if str(data.list_id) != parent.list_id:
+        raise ValueError("Subtask must use the same list as its parent")
+
+    # Create with parent_task_id set (Pydantic v2: model_copy)
+    payload = data.model_copy(update={"parent_task_id": parent_task_id})
+    return create_task(db, payload)
+
+
+def _would_create_cycle(db: Session, child_id: str, new_parent_id: Optional[str]) -> bool:
+    """
+    Returns True if moving 'child_id' under 'new_parent_id' would create a cycle.
+    Walks up the parent chain of new_parent_id.
+    """
+    if new_parent_id is None:
+        return False
+    if new_parent_id == child_id:
+        return True
+
+    cursor = db.query(models.Task).filter_by(id=new_parent_id).first()
+    while cursor is not None and cursor.parent_task_id is not None:
+        if cursor.parent_task_id == child_id:
+            return True
+        cursor = db.query(models.Task).filter_by(id=cursor.parent_task_id).first()
+    return False
+
+
+def move_subtask(db: Session, child_task_id: UUID, new_parent_task_id: Optional[UUID]) -> Optional[models.Task]:
+    """
+    Re-hang a task under a new parent (or detach by passing None).
+    Prevents cycles. Requires same list (simple rule for now).
+    """
+    child = get_task(db, child_task_id)
+    if not child:
+        return None
+
+    new_parent_id_str: Optional[str] = str(new_parent_task_id) if new_parent_task_id else None
+
+    # If detaching
+    if new_parent_id_str is None:
+        child.parent_task_id = None
+        db.commit()
+        db.refresh(child)
+        return child
+
+    # Ensure new parent exists
+    new_parent = get_task(db, new_parent_task_id)  # type: ignore[arg-type]
+    if not new_parent:
+        raise ValueError("New parent task not found")
+
+    # Same-list rule (keeps MVP simple)
+    if new_parent.list_id != child.list_id:
+        raise ValueError("Child and new parent must be in the same list")
+
+    # Cycle check
+    if _would_create_cycle(db, child.id, new_parent_id_str):
+        raise ValueError("Moving would create a cycle")
+
+    child.parent_task_id = new_parent_id_str
+    db.commit()
+    db.refresh(child)
+    return child
+
+
+# ---------------------------
+# Dependencies (placeholder)
+# ---------------------------
+
+def create_dependency(db: Session, data: schema.TaskDependencyCreate) -> schema.TaskDependencyOut:
+    # Return a synthesized dependency object (no DB storage yet)
+    return schema.TaskDependencyOut(
+        id=uuid4(),
+        task_id=data.task_id,
+        depends_on_id=data.depends_on_id,
+    )
+
+
+def get_dependencies_for_task(db: Session, task_id: UUID) -> List[schema.TaskDependencyOut]:
+    # No persistence yet; return empty list
+    return []
+
+
+
+
+
+from __future__ import annotations
+
+from typing import List, Optional
+from uuid import UUID
+
+from sqlalchemy.orm import Session
+
+from app.models import core_entities as models
+
+def follow_task(db: Session, *, task_id: UUID, user_id: str) -> models.TaskWatcher:
+    existing = (
+        db.query(models.TaskWatcher)
+        .filter(models.TaskWatcher.task_id == str(task_id), models.TaskWatcher.user_id == user_id)
+        .first()
+    )
+    if existing:
+        return existing
+    w = models.TaskWatcher(task_id=str(task_id), user_id=user_id)
+    db.add(w)
+    db.commit()
+    db.refresh(w)
+    return w
+
+def unfollow_task(db: Session, *, task_id: UUID, user_id: str) -> bool:
+    existing = (
+        db.query(models.TaskWatcher)
+        .filter(models.TaskWatcher.task_id == str(task_id), models.TaskWatcher.user_id == user_id)
+        .first()
+    )
+    if not existing:
+        return False
+    db.delete(existing)
+    db.commit()
+    return True
+
+def get_watchers_for_task(db: Session, *, task_id: UUID) -> List[models.TaskWatcher]:
+    return (
+        db.query(models.TaskWatcher)
+        .filter(models.TaskWatcher.task_id == str(task_id))
+        .order_by(models.TaskWatcher.created_at.asc())
+        .all()
+    )
+
+
+
+
+
+# File: app/db/__init__.py | Version: 1.0 | Path: /app/db/__init__.py
+# Re-export commonly used items so tests can do: from app.db import Base, get_db
+from .base_class import Base
+from .session import get_db, SessionLocal, engine
+
+# Import models so SQLAlchemy Base knows about them when metadata is created
+# (This prevents "no tables" issues if tests create tables from Base without importing models)
+import app.models  # noqa: F401
+
+__all__ = ["Base", "get_db", "SessionLocal", "engine"]
+
+
+
+
+
+# File: app/db/base_class.py | Version: 1.0 | Path: /app/db/base_class.py
+from sqlalchemy.orm import declarative_base
+
+# Single, authoritative Base for all models
+Base = declarative_base()
+
+
+
+
+
+# File: app/db/session.py | Version: 1.0 | Path: /app/db/session.py
+import os
+from typing import Generator
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
+connect_args = {"check_same_thread": False} if SQLALCHEMY_DATABASE_URL.startswith("sqlite") else {}
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+def get_db() -> Generator:
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+
+
+
+# File: app/dependencies.py | Version: 1.0 | Path: /app/dependencies.py
+
+from app.db.database import SessionLocal
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+
+
+
+# File: /app/main.py | Version: 1.2 | Path: /app/main.py
+from __future__ import annotations
+
+from fastapi import FastAPI
+import importlib
+from typing import Optional
+
+
+def _include_optional_router(app: FastAPI, module_path: str, attr_name: str = "router") -> Optional[object]:
+    """
+    Safely import a router module and include it if present.
+    Prevents ImportError during test discovery when some feature routers aren't shipped yet.
+    """
+    try:
+        mod = importlib.import_module(module_path)
+        router = getattr(mod, attr_name, None)
+        if router is not None:
+            app.include_router(router)
+            return router
+    except Exception:
+        # Silently skip optional routers that are not available yet
+        return None
+    return None
+
+
+app = FastAPI(title="Task Manager API")
+
+# Core routers (present in repo)
+_include_optional_router(app, "app.routers.auth")
+_include_optional_router(app, "app.routers.core_entities")
+_include_optional_router(app, "app.routers.task")
+_include_optional_router(app, "app.routers.tags")           # ok to skip if tags not present yet
+_include_optional_router(app, "app.routers.tasks_filter")   # new unified filtering router
+
+# Optional / future routers â€” safely skipped if missing
+_include_optional_router(app, "app.routers.comments")       # comments feature
+_include_optional_router(app, "app.routers.watchers")       # watchers/notifications if split
+_include_optional_router(app, "app.routers.time_tracking")  # phase 6+ (future)
+
+
+
+
+
+# File: app/models/__init__.py | Version: 1.0 | Path: /app/models/__init__.py
+from .core_entities import (
+    User,
+    Workspace,
+    WorkspaceMember,
+    Space,
+    Folder,
+    List,
+    Task,
+    Comment,
+    TimeEntry,
+    TaskAssignee,
+    Tag,
+    TaskTag,
+)
+
+__all__ = [
+    "User",
+    "Workspace",
+    "WorkspaceMember",
+    "Space",
+    "Folder",
+    "List",
+    "Task",
+    "Comment",
+    "TimeEntry",
+    "TaskAssignee",
+    "Tag",
+    "TaskTag",
+]
+
+
+
+
+
+# File: /app/models/core_entities.py | Version: 1.5 | Path: /app/models/core_entities.py
+from __future__ import annotations
+
+from datetime import datetime, UTC
+from typing import List as TList, Optional
+from uuid import uuid4
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, Index, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.base_class import Base
+
+
+def gen_uuid() -> str:
+    return str(uuid4())
+
+
+class User(Base):
+    __tablename__ = "user"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    full_name: Mapped[Optional[str]] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
+    )
+
+    comments: Mapped[TList["Comment"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    time_entries: Mapped[TList["TimeEntry"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    task_assignees: Mapped[TList["TaskAssignee"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    workspaces: Mapped[TList["WorkspaceMember"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    task_watchers: Mapped[TList["TaskWatcher"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+
+
+class Workspace(Base):
+    __tablename__ = "workspace"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    owner_id: Mapped[str] = mapped_column(ForeignKey("user.id"), nullable=False)
+
+    owner: Mapped["User"] = relationship()
+    spaces: Mapped[TList["Space"]] = relationship(back_populates="workspace", cascade="all, delete-orphan")
+    members: Mapped[TList["WorkspaceMember"]] = relationship(back_populates="workspace", cascade="all, delete-orphan")
+
+
+class WorkspaceMember(Base):
+    __tablename__ = "workspace_member"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspace.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(ForeignKey("user.id"), index=True, nullable=False)
+    role: Mapped[str] = mapped_column(String(50), default="member")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    workspace: Mapped["Workspace"] = relationship(back_populates="members")
+    user: Mapped["User"] = relationship(back_populates="workspaces")
+
+
+class Space(Base):
+    __tablename__ = "space"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspace.id"), index=True, nullable=False)
+    is_private: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    workspace: Mapped["Workspace"] = relationship(back_populates="spaces")
+    folders: Mapped[TList["Folder"]] = relationship(back_populates="space", cascade="all, delete-orphan")
+    lists: Mapped[TList["List"]] = relationship(back_populates="space", cascade="all, delete-orphan")
+
+
+class Folder(Base):
+    __tablename__ = "folder"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    space_id: Mapped[str] = mapped_column(ForeignKey("space.id"), index=True, nullable=False)
+
+    space: Mapped["Space"] = relationship(back_populates="folders")
+    lists: Mapped[TList["List"]] = relationship(back_populates="folder", cascade="all, delete-orphan")
+
+
+class List(Base):
+    __tablename__ = "list"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    space_id: Mapped[str] = mapped_column(ForeignKey("space.id"), index=True, nullable=False)
+    folder_id: Mapped[Optional[str]] = mapped_column(ForeignKey("folder.id"), index=True)
+
+    space: Mapped["Space"] = relationship(back_populates="lists")
+    folder: Mapped[Optional["Folder"]] = relationship(back_populates="lists")
+    tasks: Mapped[TList["Task"]] = relationship(back_populates="list", cascade="all, delete-orphan")
+
+
+class Task(Base):
+    __tablename__ = "task"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
+    list_id: Mapped[str] = mapped_column(ForeignKey("list.id"), index=True, nullable=False)
+    parent_task_id: Mapped[Optional[str]] = mapped_column(ForeignKey("task.id"), index=True, nullable=True)
+
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(50), default="to_do")
+    priority: Mapped[Optional[str]] = mapped_column(String(20))
+    due_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
+    )
+
+    list: Mapped["List"] = relationship(back_populates="tasks")
+    parent: Mapped[Optional["Task"]] = relationship("Task", remote_side=lambda: [Task.id], back_populates="children")
+    children: Mapped[TList["Task"]] = relationship("Task", back_populates="parent", cascade="all, delete-orphan")
+
+    comments: Mapped[TList["Comment"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+    time_entries: Mapped[TList["TimeEntry"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+    assignees: Mapped[TList["TaskAssignee"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+    tags: Mapped[TList["TaskTag"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+    watchers: Mapped[TList["TaskWatcher"]] = relationship(back_populates="task", cascade="all, delete-orphan")
+
+
+class Comment(Base):
+    __tablename__ = "comment"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
+    task_id: Mapped[str] = mapped_column(ForeignKey("task.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(ForeignKey("user.id"), index=True, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+    user: Mapped["User"] = relationship(back_populates="comments")
+    task: Mapped["Task"] = relationship(back_populates="comments")
+
+
+class TimeEntry(Base):
+    __tablename__ = "time_entry"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
+    task_id: Mapped[str] = mapped_column(ForeignKey("task.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(ForeignKey("user.id"), index=True, nullable=False)
+    minutes: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+    user: Mapped["User"] = relationship(back_populates="time_entries")
+    task: Mapped["Task"] = relationship(back_populates="time_entries")
+
+
+class TaskAssignee(Base):
+    __tablename__ = "task_assignee"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
+    task_id: Mapped[str] = mapped_column(ForeignKey("task.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(ForeignKey("user.id"), index=True, nullable=False)
+
+    user: Mapped["User"] = relationship(back_populates="task_assignees")
+    task: Mapped["Task"] = relationship(back_populates="assignees")
+
+
+# ---- Tags ----
+class Tag(Base):
+    __tablename__ = "tag"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("workspace.id"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    color: Mapped[Optional[str]] = mapped_column(String(20))
+
+    tasks: Mapped[TList["TaskTag"]] = relationship(back_populates="tag", cascade="all, delete-orphan")
+
+
+class TaskTag(Base):
+    __tablename__ = "task_tag"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
+    task_id: Mapped[str] = mapped_column(ForeignKey("task.id"), index=True, nullable=False)
+    tag_id: Mapped[str] = mapped_column(ForeignKey("tag.id"), index=True, nullable=False)
+
+    task: Mapped["Task"] = relationship(back_populates="tags")
+    tag: Mapped["Tag"] = relationship(back_populates="tasks")
+
+
+# ---- Watchers ----
+class TaskWatcher(Base):
+    __tablename__ = "task_watcher"
+    __table_args__ = (UniqueConstraint("task_id", "user_id", name="uq_task_watcher_task_user"),)
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
+    task_id: Mapped[str] = mapped_column(ForeignKey("task.id"), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(ForeignKey("user.id"), index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+
+    task: Mapped["Task"] = relationship(back_populates="watchers")
+    user: Mapped["User"] = relationship(back_populates="task_watchers")
+
+
+# Helpful composite index for comment listing
+Index("ix_comment_task_id_created_at", Comment.task_id, Comment.created_at)
+
+
+
+
+
+# File: app/models/list.py | Version: 0.1-compat | Path: /app/models/list.py
+from .core_entities import List as List
+__all__ = ["List"]
+
+
+
+
+
+# File: app/models/task.py | Version: 0.1-compat | Path: /app/models/task.py
+from .core_entities import Task as Task
+__all__ = ["Task"]
+
+
+
+
+
+# File: /app/routers/__init__.py | Version: 1.3 | Path: /app/routers/__init__.py
+from . import auth, core_entities, task, tags, watchers
+
+__all__ = ["auth", "core_entities", "task", "tags", "watchers"]
+
+
+
+
+
+# File: app/routers/auth.py | Version: 1.2 | Path: /app/routers/auth.py
+from datetime import timedelta
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy.orm import Session
+
+from app.db.session import get_db
+from app.models import User, Workspace, WorkspaceMember
+from app.schemas.auth import TokenResponse  # response model only
+from app.security import (
+    create_access_token,
+    get_current_user,
+    get_password_hash,
+    verify_password,
+)
+
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+async def _read_payload(req: Request) -> dict:
+    """
+    Accepts JSON or form (x-www-form-urlencoded / multipart) and returns a dict.
+    Also tolerates clients that send 'username' instead of 'email'.
+    """
+    ct = req.headers.get("content-type", "")
+    data: dict
+    try:
+        if "application/json" in ct:
+            data = await req.json()
+        elif "application/x-www-form-urlencoded" in ct or "multipart/form-data" in ct:
+            form = await req.form()
+            data = dict(form)
+        else:
+            # Try JSON first, fall back to form
+            try:
+                data = await req.json()
+            except Exception:
+                form = await req.form()
+                data = dict(form)
+    except Exception:
+        data = {}
+
+    # Normalize common auth field names
+    if "email" not in data and "username" in data:
+        data["email"] = data.get("username")
+    return data
+
+
+@router.post("/register", response_model=TokenResponse)
+async def register(req: Request, db: Session = Depends(get_db)):
+    payload = await _read_payload(req)
+    email = (payload.get("email") or "").strip().lower()
+    password = payload.get("password")
+    full_name = payload.get("full_name")
+
+    if not email or not password:
+        raise HTTPException(status_code=422, detail="email and password are required")
+
+    existing = db.query(User).filter(User.email == email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    user = User(
+        email=email,
+        hashed_password=get_password_hash(password),
+        full_name=full_name,
+        is_active=True,
+    )
+    db.add(user)
+    db.flush()  # get user.id
+
+    ws_name = f"{email.split('@')[0]}'s workspace" if "@" in email else f"{email}'s workspace"
+    workspace = Workspace(name=ws_name, owner_id=user.id)
+    db.add(workspace)
+    db.flush()
+
+    membership = WorkspaceMember(
+        workspace_id=workspace.id, user_id=user.id, role="owner", is_active=True
+    )
+    db.add(membership)
+    db.commit()
+
+    token = create_access_token({"sub": user.id}, expires_delta=timedelta(minutes=60))
+    return TokenResponse(access_token=token, token_type="bearer")
+
+
+@router.post("/login", response_model=TokenResponse)
+async def login(req: Request, db: Session = Depends(get_db)):
+    payload = await _read_payload(req)
+    email = (payload.get("email") or "").strip().lower()
+    password = payload.get("password")
+
+    if not email or not password:
+        raise HTTPException(status_code=422, detail="email/username and password are required")
+
+    user = db.query(User).filter(User.email == email).first()
+    if not user or not verify_password(password, user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    token = create_access_token({"sub": user.id}, expires_delta=timedelta(minutes=60))
+    return TokenResponse(access_token=token, token_type="bearer")
+
+
+@router.post("/token", response_model=TokenResponse)
+def token(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    # OAuth2 form uses "username" as the identifier; here we treat it as email
+    email = form.username.strip().lower()
+    user = db.query(User).filter(User.email == email).first()
+    if not user or not verify_password(form.password, user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    token = create_access_token({"sub": user.id}, expires_delta=timedelta(minutes=60))
+    return TokenResponse(access_token=token, token_type="bearer")
+
+
+@router.get("/protected")
+def protected(current_user: User = Depends(get_current_user)):
+    return {"ok": True, "user": {"id": current_user.id, "email": current_user.email}}
+
+
+
+
+
+# File: app/routers/auth_dependencies.py | Version: 1.0 | Path: /app/routers/auth_dependencies.py
+from fastapi import Depends
+
+# We assume you already have a dependency that reads the JWT and returns the current user.
+# If it's elsewhere, update the import below to match your project.
+from app.security import get_current_user
+
+
+def get_me(current_user=Depends(get_current_user)):
+    """
+    Wrapper dependency so other routers can just Depends(get_me)
+    to fetch the authenticated user object (whatever your get_current_user returns).
+    """
+    return current_user
+
+
+
+
+
+# File: /app/routers/core_entities.py | Version: 1.6 | Path: /app/routers/core_entities.py
+from typing import List
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.crud import core_entities as crud_core
+from app.db.session import get_db
+from app.schemas import core_entities as schema
+from app.core.permissions import Role, require_role, get_workspace_role
+from app.routers.auth_dependencies import get_me  # Authenticated user from token
+
+router = APIRouter(tags=["Core Entities"])
+
+# ----- WORKSPACE ROUTES -----
+
+@router.post("/workspaces/", response_model=schema.WorkspaceOut)
+def create_workspace(
+    data: schema.WorkspaceCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    # Any authenticated user may create a workspace; they will be Owner in that workspace.
+    return crud_core.create_workspace(db, data, owner_id=str(current_user.id))
+
+@router.get("/workspaces/", response_model=List[schema.WorkspaceOut])
+def get_my_workspaces(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    # Return by membership (Owner/Admin/Member/Guest), not just ownership
+    return crud_core.get_workspaces_for_user(db, user_id=str(current_user.id))
+
+@router.get("/workspaces/{workspace_id}", response_model=schema.WorkspaceOut)
+def get_workspace(
+    workspace_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    # Must be a member of the workspace to view
+    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(workspace_id))
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this workspace")
+    workspace = crud_core.get_workspace(db, workspace_id)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return workspace
+
+# ----- SPACE ROUTES -----
+
+@router.post("/spaces/", response_model=schema.SpaceOut)
+def create_space(
+    data: schema.SpaceCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    # Require Member+ in the target workspace
+    require_role(db, user_id=str(current_user.id), workspace_id=str(data.workspace_id), minimum=Role.MEMBER)
+    return crud_core.create_space(db, data)
+
+@router.get("/spaces/by-workspace/{workspace_id}", response_model=List[schema.SpaceOut])
+def get_spaces(
+    workspace_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(workspace_id))
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this workspace")
+    return crud_core.get_spaces_by_workspace(db, str(workspace_id))
+
+# ----- FOLDER ROUTES -----
+
+@router.post("/folders/", response_model=schema.FolderOut)
+def create_folder(
+    data: schema.FolderCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    # Validate membership via the parent space's workspace
+    space = crud_core.get_space(db, data.space_id)
+    if not space:
+        raise HTTPException(status_code=404, detail="Space not found")
+    require_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id), minimum=Role.MEMBER)
+    return crud_core.create_folder(db, data)
+
+@router.get("/folders/by-space/{space_id}", response_model=List[schema.FolderOut])
+def get_folders(
+    space_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    space = crud_core.get_space(db, space_id)
+    if not space:
+        raise HTTPException(status_code=404, detail="Space not found")
+    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id))
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this space")
+    return crud_core.get_folders_by_space(db, str(space_id))
+
+# ----- LIST ROUTES -----
+
+@router.post("/lists/", response_model=schema.ListOut)
+def create_list(
+    data: schema.ListCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    # Validate membership via the parent space/folder â†’ workspace
+    space = crud_core.get_space(db, data.space_id)
+    if not space:
+        raise HTTPException(status_code=404, detail="Space not found")
+    require_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id), minimum=Role.MEMBER)
+    return crud_core.create_list(db, data)
+
+@router.get("/lists/by-space/{space_id}", response_model=List[schema.ListOut])
+def get_lists_by_space(
+    space_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    space = crud_core.get_space(db, space_id)
+    if not space:
+        raise HTTPException(status_code=404, detail="Space not found")
+    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id))
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this space")
+    return crud_core.get_lists_by_space(db, str(space_id))
+
+@router.get("/lists/by-folder/{folder_id}", response_model=List[schema.ListOut])
+def get_lists_by_folder(
+    folder_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    folder = crud_core.get_folder(db, folder_id)
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    # Get space -> workspace for membership
+    space = crud_core.get_space(db, folder.space_id)
+    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id))
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this folder")
+    return crud_core.get_lists_by_folder(db, str(folder_id))
+
+
+
+
+
+# File: /app/routers/tags.py | Version: 1.5 | Path: /app/routers/tags.py
+from typing import List, Literal
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+
+from app.crud import core_entities as crud_core
+from app.crud import task as crud_task
+from app.crud import tags as crud_tags
+from app.db.session import get_db
+from app.schemas import tags as tag_schema
+from app.schemas import task as task_schema
+from app.routers.auth_dependencies import get_me
+from app.core.permissions import Role, require_role, get_workspace_role
+
+router = APIRouter(tags=["Tags"])
+
+# ---------- Workspace-level tags ----------
+
+@router.post("/workspaces/{workspace_id}/tags", response_model=tag_schema.TagOut)
+def create_tag(
+    workspace_id: UUID,
+    data: tag_schema.TagCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    # permissions: Member+ of workspace can create/list tags
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(workspace_id),
+        minimum=Role.MEMBER,
+    )
+    # ensure workspace exists (404 vs silent create)
+    ws = crud_core.get_workspace(db, workspace_id)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    created = crud_tags.create_tag(db, workspace_id=workspace_id, name=data.name, color=data.color)
+    return created
+
+
+@router.get("/workspaces/{workspace_id}/tags", response_model=List[tag_schema.TagOut])
+def list_workspace_tags(
+    workspace_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(workspace_id))
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this workspace")
+    return crud_tags.get_workspace_tags(db, workspace_id=workspace_id)
+
+
+# ---------- Task â†” tag (single) ----------
+
+@router.get("/tasks/{task_id}/tags", response_model=List[tag_schema.TagOut])
+def list_task_tags(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    parent_list = crud_core.get_list(db, task.list_id)
+    space = crud_core.get_space(db, parent_list.space_id)
+    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id))
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this task")
+    return crud_tags.get_tags_for_task(db, task_id=task_id)
+
+
+@router.post("/tasks/{task_id}/tags/{tag_id}")
+def assign_tag(
+    task_id: UUID,
+    tag_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    # task/workspace membership
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    parent_list = crud_core.get_list(db, task.list_id)
+    space = crud_core.get_space(db, parent_list.space_id)
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
+
+    # tag exists and matches same workspace
+    tag = crud_tags.get_tag(db, tag_id=tag_id)
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    if tag.workspace_id != str(space.workspace_id):
+        raise HTTPException(status_code=400, detail="Tag workspace mismatch with task")
+
+    crud_tags.assign_tag_to_task(db, task_id=task_id, tag_id=tag_id)
+    return {"detail": "Tag assigned"}
+
+
+@router.delete("/tasks/{task_id}/tags/{tag_id}")
+def unassign_tag(
+    task_id: UUID,
+    tag_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    parent_list = crud_core.get_list(db, task.list_id)
+    space = crud_core.get_space(db, parent_list.space_id)
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
+
+    tag = crud_tags.get_tag(db, tag_id=tag_id)
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+    if tag.workspace_id != str(space.workspace_id):
+        raise HTTPException(status_code=400, detail="Tag workspace mismatch with task")
+
+    crud_tags.unassign_tag_from_task(db, task_id=task_id, tag_id=tag_id)
+    return {"detail": "Tag unassigned"}
+
+
+# ---------- Task â†” tag (bulk) ----------
+
+@router.post("/tasks/{task_id}/tags:assign", response_model=tag_schema.BulkAssignResult)
+def bulk_assign_tags(
+    task_id: UUID,
+    body: tag_schema.TagIdsIn,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    parent_list = crud_core.get_list(db, task.list_id)
+    space = crud_core.get_space(db, parent_list.space_id)
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
+
+    tags = crud_tags.get_tags_by_ids(db, tag_ids=body.tag_ids)
+    if len(tags) != len(body.tag_ids):
+        raise HTTPException(status_code=404, detail="Tag not found")
+    if any(t.workspace_id != str(space.workspace_id) for t in tags):
+        raise HTTPException(status_code=400, detail="Tag workspace mismatch with task")
+
+    n = crud_tags.assign_tags_to_task(db, task_id=task_id, tag_ids=body.tag_ids)
+    return {"assigned": n}
+
+
+@router.post("/tasks/{task_id}/tags:unassign", response_model=tag_schema.BulkUnassignResult)
+def bulk_unassign_tags(
+    task_id: UUID,
+    body: tag_schema.TagIdsIn,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    parent_list = crud_core.get_list(db, task.list_id)
+    space = crud_core.get_space(db, parent_list.space_id)
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
+
+    tags = crud_tags.get_tags_by_ids(db, tag_ids=body.tag_ids)
+    if len(tags) != len(body.tag_ids):
+        raise HTTPException(status_code=404, detail="Tag not found")
+    if any(t.workspace_id != str(space.workspace_id) for t in tags):
+        raise HTTPException(status_code=400, detail="Tag workspace mismatch with task")
+
+    n = crud_tags.unassign_tags_from_task(db, task_id=task_id, tag_ids=body.tag_ids)
+    return {"unassigned": n}
+
+
+# ---------- Filters ----------
+
+@router.get("/tags/{tag_id}/tasks", response_model=List[task_schema.TaskOut])
+def list_tasks_for_tag(
+    tag_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    tag = crud_tags.get_tag(db, tag_id=tag_id)
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    # membership in the tag's workspace
+    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=tag.workspace_id)
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this workspace")
+
+    return crud_tags.get_tasks_for_tag(db, tag_id=tag_id)
+
+
+@router.get("/workspaces/{workspace_id}/tasks/by-tags", response_model=List[task_schema.TaskOut])
+def list_tasks_by_tags(
+    workspace_id: UUID,
+    tag_ids: List[UUID] = Query(..., description="Repeat ?tag_ids=... for multiple tags"),
+    match: Literal["any", "all"] = Query("any"),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(workspace_id))
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this workspace")
+
+    return crud_tags.get_tasks_by_tags(
+        db,
+        workspace_id=workspace_id,
+        tag_ids=tag_ids,
+        match=match,
+        limit=limit,
+        offset=offset,
+    )
+
+
+
+
+
+# File: /app/routers/task.py | Version: 1.10 | Path: /app/routers/task.py
+from typing import List
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+
+from app.crud import core_entities as crud_core
+from app.crud import task as crud_task
+from app.crud import comments as crud_comments
+from app.crud import watchers as crud_watchers
+
+from app.db.session import get_db
+from app.schemas import task as schema
+from app.schemas import comments as comment_schema
+from app.routers.auth_dependencies import get_me
+from app.core.permissions import Role, require_role, get_workspace_role
+
+router = APIRouter(tags=["Tasks"])
+
+# =========================
+# TASKS
+# =========================
+
+@router.post("/tasks/", response_model=schema.TaskOut)
+def create_task(
+    data: schema.TaskCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    # Validate membership in the task's workspace via its space
+    space = crud_core.get_space(db, data.space_id)
+    if not space:
+        raise HTTPException(status_code=404, detail="Space not found")
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
+    return crud_task.create_task(db, data)
+
+
+@router.get("/tasks/{task_id}", response_model=schema.TaskOut)
+def get_task(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    # Verify membership using task -> list -> space -> workspace
+    parent_list = crud_core.get_list(db, task.list_id)
+    if not parent_list:
+        raise HTTPException(status_code=404, detail="List not found")
+    space = crud_core.get_space(db, parent_list.space_id)
+    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id))
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this task")
+    return task
+
+
+@router.get("/tasks/by-list/{list_id}", response_model=List[schema.TaskOut])
+def get_tasks_by_list(
+    list_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    parent_list = crud_core.get_list(db, list_id)
+    if not parent_list:
+        raise HTTPException(status_code=404, detail="List not found")
+    space = crud_core.get_space(db, parent_list.space_id)
+    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id))
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this list")
+    return crud_task.get_tasks_by_list(db, list_id)
+
+
+@router.put("/tasks/{task_id}", response_model=schema.TaskOut)
+def update_task(
+    task_id: UUID,
+    data: schema.TaskUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    parent_list = crud_core.get_list(db, task.list_id)
+    if not parent_list:
+        raise HTTPException(status_code=404, detail="List not found")
+    space = crud_core.get_space(db, parent_list.space_id)
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
+    updated = crud_task.update_task(db, task_id, data)
+    return updated
+
+
+@router.delete("/tasks/{task_id}")
+def delete_task(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    parent_list = crud_core.get_list(db, task.list_id)
+    if not parent_list:
+        raise HTTPException(status_code=404, detail="List not found")
+    space = crud_core.get_space(db, parent_list.space_id)
+    # Admin+ can delete
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.ADMIN,
+    )
+    deleted = crud_task.delete_task(db, task_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"detail": "Task soft-deleted"}
+
+# =========================
+# DEPENDENCIES
+# =========================
+
+@router.post("/tasks/dependencies/", response_model=schema.TaskDependencyOut)
+def create_dependency(
+    data: schema.TaskDependencyCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, data.task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    parent_list = crud_core.get_list(db, task.list_id)
+    if not parent_list:
+        raise HTTPException(status_code=404, detail="List not found")
+    space = crud_core.get_space(db, parent_list.space_id)
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
+    return crud_task.create_dependency(db, data)
+
+
+@router.get("/tasks/{task_id}/dependencies", response_model=List[schema.TaskDependencyOut])
+def get_dependencies(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    parent_list = crud_core.get_list(db, task.list_id)
+    if not parent_list:
+        raise HTTPException(status_code=404, detail="List not found")
+    space = crud_core.get_space(db, parent_list.space_id)
+    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id))
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this task")
+    return crud_task.get_dependencies_for_task(db, task_id)
+
+# =========================
+# SUBTASKS
+# =========================
+
+@router.post("/tasks/{task_id}/subtasks", response_model=schema.TaskOut)
+def create_subtask(
+    task_id: UUID,
+    data: schema.TaskCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    parent = crud_task.get_task(db, task_id)
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent task not found")
+
+    parent_list = crud_core.get_list(db, parent.list_id)
+    if not parent_list:
+        raise HTTPException(status_code=404, detail="Parent list not found")
+
+    space = crud_core.get_space(db, parent_list.space_id)
+    if not space:
+        raise HTTPException(status_code=404, detail="Space not found")
+
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
+
+    payload = schema.TaskCreate(
+        list_id=UUID(parent.list_id),
+        space_id=UUID(space.id),
+        name=data.name,
+        description=data.description,
+        status=data.status,
+        priority=data.priority,
+        due_date=data.due_date,
+        start_date=data.start_date,
+        time_estimate=data.time_estimate,
+        assignee_ids=data.assignee_ids,
+        parent_task_id=task_id,
+    )
+    created = crud_task.create_subtask(db, task_id, payload)
+    return created
+
+
+@router.get("/tasks/{task_id}/subtasks", response_model=List[schema.TaskOut])
+def list_subtasks(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    parent = crud_task.get_task(db, task_id)
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent task not found")
+
+    parent_list = crud_core.get_list(db, parent.list_id)
+    if not parent_list:
+        raise HTTPException(status_code=404, detail="Parent list not found")
+
+    space = crud_core.get_space(db, parent_list.space_id)
+    if not space:
+        raise HTTPException(status_code=404, detail="Space not found")
+
+    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id))
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this task")
+
+    return crud_task.get_subtasks(db, task_id)
+
+
+@router.post("/tasks/{task_id}/move", response_model=schema.TaskOut)
+def move_subtask(
+    task_id: UUID,
+    body: schema.MoveSubtaskRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    parent_list = crud_core.get_list(db, task.list_id)
+    if not parent_list:
+        raise HTTPException(status_code=404, detail="List not found")
+    space = crud_core.get_space(db, parent_list.space_id)
+    if not space:
+        raise HTTPException(status_code=404, detail="Space not found")
+
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
+
+    new_parent_uuid = body.new_parent_task_id
+    if new_parent_uuid is not None:
+        new_parent = crud_task.get_task(db, new_parent_uuid)
+        if not new_parent:
+            raise HTTPException(status_code=404, detail="New parent task not found")
+
+    try:
+        moved = crud_task.move_subtask(db, task_id, new_parent_uuid)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return moved
+
+# =========================
+# COMMENTS
+# =========================
+
+@router.post("/tasks/{task_id}/comments", response_model=comment_schema.CommentOut)
+def create_comment(
+    task_id: UUID,
+    body: comment_schema.CommentCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    """
+    Create a comment on a task (Member+ required in the task's workspace).
+    Also auto-follows the task for the commenting user (idempotent).
+    """
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    parent_list = crud_core.get_list(db, task.list_id)
+    if not parent_list:
+        raise HTTPException(status_code=404, detail="List not found")
+    space = crud_core.get_space(db, parent_list.space_id)
+    if not space:
+        raise HTTPException(status_code=404, detail="Space not found")
+
+    # Permission: Member+ in workspace
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
+
+    created = crud_comments.create_comment(
+        db, task_id=task_id, user_id=str(current_user.id), body=body.body
+    )
+
+    # Auto-follow: commenter becomes a watcher (idempotent; swallow non-fatal errors)
+    try:
+        crud_watchers.follow_task(db, task_id=task_id, user_id=str(current_user.id))
+    except Exception:
+        # We don't want a watcher failure to block comment creation
+        pass
+
+    return created
+
+
+@router.get("/tasks/{task_id}/comments", response_model=List[comment_schema.CommentOut])
+def list_comments(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    parent_list = crud_core.get_list(db, task.list_id)
+    if not parent_list:
+        raise HTTPException(status_code=404, detail="List not found")
+    space = crud_core.get_space(db, parent_list.space_id)
+    if not space:
+        raise HTTPException(status_code=404, detail="Space not found")
+
+    role = get_workspace_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+    )
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this task")
+
+    return crud_comments.get_comments_for_task(
+        db, task_id=task_id, limit=limit, offset=offset
+    )
+
+
+@router.put("/tasks/{task_id}/comments/{comment_id}", response_model=comment_schema.CommentOut)
+def update_comment(
+    task_id: UUID,
+    comment_id: UUID,
+    body: comment_schema.CommentUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    parent_list = crud_core.get_list(db, task.list_id)
+    if not parent_list:
+        raise HTTPException(status_code=404, detail="List not found")
+    space = crud_core.get_space(db, parent_list.space_id)
+    if not space:
+        raise HTTPException(status_code=404, detail="Space not found")
+
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
+
+    comment = crud_comments.get_comment(db, comment_id=comment_id)
+    if not comment or comment.task_id != str(task_id):
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    if comment.user_id != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Only the author can edit this comment")
+
+    updated = crud_comments.update_comment(db, comment_id=comment_id, body=body.body)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    return updated
+
+
+@router.delete("/tasks/{task_id}/comments/{comment_id}")
+def delete_comment(
+    task_id: UUID,
+    comment_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    parent_list = crud_core.get_list(db, task.list_id)
+    if not parent_list:
+        raise HTTPException(status_code=404, detail="List not found")
+    space = crud_core.get_space(db, parent_list.space_id)
+    if not space:
+        raise HTTPException(status_code=404, detail="Space not found")
+
+    comment = crud_comments.get_comment(db, comment_id=comment_id)
+    if not comment or comment.task_id != str(task_id):
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id))
+
+    if not (comment.user_id == str(current_user.id) or (role is not None and role >= Role.ADMIN)):
+        raise HTTPException(status_code=403, detail="Not allowed to delete this comment")
+
+    ok = crud_comments.delete_comment(db, comment_id=comment_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    return {"detail": "Comment deleted"}
+
+
+
+
+
+# File: /app/routers/tasks_filter.py | Version: 1.0
+from __future__ import annotations
+
+from typing import Any, Dict, List
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.schemas.filters import FilterPayload
+from app.crud.filtering import fetch_tasks, group_tasks
+from app.db.database import get_db
+from app.security import get_current_user
+from app.models.user import User
+from app.core.permissions import require_workspace_member  # assuming you have this
+
+router = APIRouter(prefix="/workspaces", tags=["tasks-filter"])
+
+
+@router.post("/{workspace_id}/tasks/filter")
+def filter_tasks(
+    workspace_id: str,
+    payload: FilterPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Unified filtering endpoint per spec:
+
+    - Permissions-first: validates the user is a member of the workspace in scope.
+    - Supports filtering by standard fields and tags (any/all).
+    - Optional grouping (status, priority, due_date, assignee_id).
+    - Pagination via limit/offset in payload.
+    """
+    # 1) Permissions-first (spec requirement)
+    try:
+        require_workspace_member(db, current_user.id, workspace_id)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed in this workspace.")
+
+    # 2) Server-side guard: payload scope must be consistent with path workspace
+    if payload.scope.workspace_id and payload.scope.workspace_id != workspace_id:
+        raise HTTPException(status_code=400, detail="Payload.workspace_id must match path workspace_id")
+
+    # 3) Execute filtered query
+    rows = fetch_tasks(db, payload)
+
+    # 4) Grouping (optional)
+    grouped = group_tasks(rows, payload.group_by.value if payload.group_by else None)
+
+    return {
+        "count": sum(len(g["tasks"]) for g in grouped),
+        "groups": grouped,
+    }
+
+
+
+
+
+from uuid import UUID
+from typing import List
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.crud import core_entities as crud_core
+from app.crud import task as crud_task
+from app.crud import watchers as crud_watch
+from app.db.session import get_db
+from app.schemas import watchers as schema
+from app.routers.auth_dependencies import get_me
+from app.core.permissions import Role, require_role, get_workspace_role
+
+router = APIRouter(tags=["Watchers"])
+
+@router.get("/tasks/{task_id}/watchers", response_model=List[schema.WatcherOut])
+def list_watchers(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    parent_list = crud_core.get_list(db, task.list_id)
+    space = crud_core.get_space(db, parent_list.space_id)
+    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id))
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this task")
+    return crud_watch.get_watchers_for_task(db, task_id=task_id)
+
+@router.post("/tasks/{task_id}/watch", response_model=schema.WatcherOut)
+def follow(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    parent_list = crud_core.get_list(db, task.list_id)
+    space = crud_core.get_space(db, parent_list.space_id)
+    require_role(
+        db, user_id=str(current_user.id), workspace_id=str(space.workspace_id), minimum=Role.MEMBER
+    )
+    return crud_watch.follow_task(db, task_id=task_id, user_id=str(current_user.id))
+
+@router.delete("/tasks/{task_id}/watch")
+def unfollow(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    parent_list = crud_core.get_list(db, task.list_id)
+    space = crud_core.get_space(db, parent_list.space_id)
+    require_role(
+        db, user_id=str(current_user.id), workspace_id=str(space.workspace_id), minimum=Role.MEMBER
+    )
+    ok = crud_watch.unfollow_task(db, task_id=task_id, user_id=str(current_user.id))
+    if not ok:
+        raise HTTPException(status_code=404, detail="Not watching")
+    return {"detail": "Unfollowed"}
+
+
+
+
+
+# File: /app/schemas/__init__.py | Version: 1.4 | Path: /app/schemas/__init__.py
+from . import auth, user, task, core_entities, comments, tags, watchers
+
+__all__ = ["auth", "user", "task", "core_entities", "comments", "tags", "watchers"]
+
+
+
+
+
+# File: /app/schemas/auth.py | Version: 2.0 | Path: /app/schemas/auth.py
+from __future__ import annotations
+
+from pydantic import BaseModel, EmailStr
+
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str
+    full_name: str | None = None
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+
+
+
+# File: /app/schemas/comments.py | Version: 1.1 | Path: /app/schemas/comments.py
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict
+
+
+class CommentCreate(BaseModel):
+    body: str
+
+
+class CommentUpdate(BaseModel):
+    body: str
+
+
+class CommentOut(BaseModel):
+    id: str
+    task_id: str
+    user_id: str
+    body: str
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+
+
+
+# File: /app/schemas/core_entities.py | Version: 2.0
+from __future__ import annotations
+
+from typing import Optional
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict
+
+
+# -------------------- Workspace --------------------
+
+class WorkspaceCreate(BaseModel):
+    name: str
+
+
+class WorkspaceUpdate(BaseModel):
+    name: Optional[str] = None
+
+
+class WorkspaceOut(BaseModel):
+    id: str
+    name: str
+    owner_id: str
+    # Make timestamps optional so ResponseValidationError doesn't occur if the model lacks them
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# -------------------- Space --------------------
+
+class SpaceCreate(BaseModel):
+    name: str
+    workspace_id: str
+
+
+class SpaceUpdate(BaseModel):
+    name: Optional[str] = None
+
+
+class SpaceOut(BaseModel):
+    id: str
+    name: str
+    workspace_id: str
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# -------------------- Folder --------------------
+
+class FolderCreate(BaseModel):
+    name: str
+    space_id: str
+
+
+class FolderUpdate(BaseModel):
+    name: Optional[str] = None
+
+
+class FolderOut(BaseModel):
+    id: str
+    name: str
+    space_id: str
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# -------------------- List --------------------
+
+class ListCreate(BaseModel):
+    name: str
+    space_id: str
+    folder_id: Optional[str] = None
+
+
+class ListUpdate(BaseModel):
+    name: Optional[str] = None
+
+
+class ListOut(BaseModel):
+    id: str
+    name: str
+    space_id: str
+    folder_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+
+
+
+# File: /app/schemas/filters.py | Version: 1.0
+from __future__ import annotations
+
+from enum import Enum
+from typing import List, Optional, Union, Any
+from pydantic import BaseModel, Field, validator
+
+
+class FilterOperator(str, Enum):
+    eq = "eq"
+    ne = "ne"
+    lt = "lt"
+    lte = "lte"
+    gt = "gt"
+    gte = "gte"
+    contains = "contains"
+    in_ = "in"          # list of values
+    not_in = "not_in"   # list of values
+    is_empty = "is_empty"
+    is_not_empty = "is_not_empty"
+
+
+# Canonical task fields available for filtering in MVP (per spec)
+class TaskField(str, Enum):
+    name = "name"
+    status = "status"
+    priority = "priority"
+    due_date = "due_date"
+    start_date = "start_date"
+    assignee_id = "assignee_id"  # optional (if you have TaskAssignees link table)
+    tag_ids = "tag_ids"          # special-cased; use TagsFilter instead
+    # Custom fields will be added in Phase 5C
+
+
+class FilterRule(BaseModel):
+    field: TaskField
+    op: FilterOperator
+    value: Optional[Union[str, int, float, List[Any]]] = None
+
+
+class TagsMatch(str, Enum):
+    any = "any"
+    all = "all"
+
+
+class TagsFilter(BaseModel):
+    tag_ids: List[str] = Field(default_factory=list)  # string UUIDs in your app
+    match: TagsMatch = TagsMatch.any
+
+
+class Scope(BaseModel):
+    """
+    Query scope chooses the dataset before filters.
+    Provide exactly one of: list_id, folder_id, space_id, or workspace_id.
+    """
+    list_id: Optional[str] = None
+    folder_id: Optional[str] = None
+    space_id: Optional[str] = None
+    workspace_id: Optional[str] = None
+
+    @validator("workspace_id", always=True)
+    def at_least_one(cls, v, values):
+        if not (v or values.get("space_id") or values.get("folder_id") or values.get("list_id")):
+            raise ValueError(
+                "Provide one scope: workspace_id or space_id or folder_id or list_id"
+            )
+        return v
+
+
+class GroupBy(str, Enum):
+    status = "status"
+    assignee_id = "assignee_id"
+    priority = "priority"
+    due_date = "due_date"
+    tag_ids = "tag_ids"  # when grouping by tags, tasks may appear in multiple groups
+
+
+class FilterPayload(BaseModel):
+    scope: Scope
+    filters: List[FilterRule] = Field(default_factory=list)
+    tags: Optional[TagsFilter] = None
+    group_by: Optional[GroupBy] = None
+    limit: int = Field(default=200, ge=1, le=1000)
+    offset: int = Field(default=0, ge=0)
+
+
+
+
+
+# File: /app/schemas/tags.py | Version: 1.2 | Path: /app/schemas/tags.py
+from __future__ import annotations
+
+from typing import Optional, List
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
+
+
+class TagCreate(BaseModel):
+    name: str
+    color: Optional[str] = None
+
+
+class TagOut(BaseModel):
+    id: str
+    workspace_id: str
+    name: str
+    color: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# -------- Bulk operations --------
+
+class TagIdsIn(BaseModel):
+    tag_ids: List[UUID]
+
+
+class BulkAssignResult(BaseModel):
+    assigned: int
+
+
+class BulkUnassignResult(BaseModel):
+    unassigned: int
+
+
+
+
+
+# File: /app/schemas/task.py | Version: 2.2 | Path: /app/schemas/task.py
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional, List
+from uuid import UUID
+
+from pydantic import BaseModel, Field, ConfigDict
+
+
+# ---- Base Task Schema ----
+
+class TaskBase(BaseModel):
+    name: str = Field(..., max_length=200)
+    description: Optional[str] = None
+    status: Optional[str] = "To Do"
+    priority: Optional[str] = "Normal"
+    due_date: Optional[datetime] = None
+    start_date: Optional[datetime] = None
+    time_estimate: Optional[int] = None  # minutes
+    parent_task_id: Optional[UUID] = None
+
+
+class TaskCreate(TaskBase):
+    list_id: UUID
+    space_id: UUID
+    assignee_ids: Optional[List[UUID]] = None
+
+
+class TaskUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    due_date: Optional[datetime] = None
+    start_date: Optional[datetime] = None
+    time_estimate: Optional[int] = None
+
+
+class TaskOut(TaskBase):
+    id: UUID
+    list_id: UUID
+    # The ORM doesn't store space_id; we derive it when needed.
+    space_id: Optional[UUID] = None
+    assignee_ids: List[UUID] = []
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ---- Dependencies ----
+
+class TaskDependencyCreate(BaseModel):
+    task_id: UUID
+    depends_on_id: UUID
+
+
+class TaskDependencyOut(BaseModel):
+    id: UUID
+    task_id: UUID
+    depends_on_id: UUID
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ---- Move Subtask ----
+
+class MoveSubtaskRequest(BaseModel):
+    new_parent_task_id: Optional[UUID] = None
+
+
+
+
+
+# File: /app/schemas/user.py | Version: 2.0 | Path: /app/schemas/user.py
+from __future__ import annotations
+
+from pydantic import BaseModel, EmailStr
+from pydantic import ConfigDict
+
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    full_name: str | None = None
+    password: str
+
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class UserResponse(BaseModel):
+    id: str
+    email: EmailStr
+    full_name: str | None = None
+
+    # Pydantic v2 style
+    model_config = ConfigDict(from_attributes=True)
+
+
+
+
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+from pydantic import BaseModel, ConfigDict
+
+class WatcherOut(BaseModel):
+    id: str
+    task_id: str
+    user_id: str
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+
+
+
+# File: app/security.py | Version: 1.2 | Path: /app/security.py
+from datetime import datetime, timedelta, UTC
+from typing import Optional
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from sqlalchemy.orm import Session
+
+from app.db.session import get_db
+from app.models import User
+
+# Basic dev settings (ok for tests)
+SECRET_KEY = "dev-secret-key-change-me"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    to_encode = data.copy()
+    # timezone-aware UTC avoids deprecation warnings
+    expire = datetime.now(UTC) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: Optional[str] = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or not user.is_active:
+        raise credentials_exception
+    return user
+
+
+
+
+
+# File: debug_metadata.py
+from app.db.base_class import Base
+
+from app.models import (
+    core_entities,
+    list,
+    task,
+    user,
+    workspace_member,
+    tag,
+    comment,
+    time_entry,
+    task_assignee,
+)
+
+print("âœ… Metadata table keys:")
+for table in Base.metadata.tables.keys():
+    print("-", table)
+
+
+
+
+
+# File: /tests/conftest.py | Version: 2.0
+import pathlib
+import sys
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+# --- Ensure repo root is importable as a package root ---
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# --- Canonical imports from the app ---
+from app.db.base_class import Base
+from app.main import app
+
+# NOTE: We create a dedicated test engine/session and override get_db so the app uses it.
+TEST_DATABASE_URL = "sqlite:///./test.db"
+engine = create_engine(
+    TEST_DATABASE_URL,
+    connect_args={"check_same_thread": False},  # needed for SQLite in tests
+)
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# --- Create schema once per test session ---
+@pytest.fixture(scope="session", autouse=True)
+def _create_schema():
+    Base.metadata.create_all(bind=engine)
+    yield
+    Base.metadata.drop_all(bind=engine)
+
+# --- Per-test DB session with rollback isolation ---
+@pytest.fixture()
+def db_session():
+    connection = engine.connect()
+    trans = connection.begin()
+    try:
+        session = TestingSessionLocal(bind=connection)
+        yield session
+    finally:
+        session.close()
+        trans.rollback()
+        connection.close()
+
+# --- FastAPI TestClient that uses our test DB via dependency override ---
+@pytest.fixture()
+def client(db_session):
+    from app.db.session import get_db  # import here to avoid circulars
+
+    def _override_get_db():
+        try:
+            yield db_session
+        finally:
+            pass
+
+    app.dependency_overrides[get_db] = _override_get_db
+    with TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+
+
+
+# File: tests/test_auth.py | Version: 1.1 | Path: /tests/test_auth.py
+from fastapi.testclient import TestClient
+
+def test_register_and_login(client: TestClient):
+    # Adjust payload keys/routes if your API expects different names
+    reg = client.post(
+        "/auth/register",
+        json={"email": "test@example.com", "password": "secret123"}
+    )
+    assert reg.status_code in (200, 201)
+
+    login = client.post(
+        "/auth/login",
+        data={"username": "test@example.com", "password": "secret123"},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    assert login.status_code == 200
+    data = login.json()
+    assert "access_token" in data
+    assert data.get("token_type") in ("bearer", "Bearer")
+
+
+
+
+
+# File: /tests/test_comments_api.py | Version: 1.1 | Path: /tests/test_comments_api.py
+from typing import Dict, Tuple
+
+def _register(client, email: str, password: str = "Passw0rd!", full_name: str = "Test User"):
+    r = client.post("/auth/register", json={"email": email, "password": password, "full_name": full_name})
+    assert r.status_code in (200, 201), r.text
+    return r.json()
+
+def _login_token(client, email: str, password: str = "Passw0rd!") -> str:
+    r = client.post(
+        "/auth/token",
+        data={"username": email, "password": password, "grant_type": "password"},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    if r.status_code == 200 and "access_token" in r.json():
+        return r.json()["access_token"]
+    r = client.post("/auth/login", json={"username": email, "password": password})
+    assert r.status_code == 200 and "access_token" in r.json(), r.text
+    return r.json()["access_token"]
+
+def _auth_headers(token: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+def _create_workspace_space_list_task(client, headers) -> Tuple[str, str, str, str]:
+    r = client.post("/workspaces/", json={"name": "W"}, headers=headers); assert r.status_code in (200, 201), r.text
+    wid = r.json()["id"]
+    r = client.post("/spaces/", json={"name": "S", "workspace_id": wid}, headers=headers); assert r.status_code in (200, 201), r.text
+    sid = r.json()["id"]
+    r = client.post("/lists/", json={"name": "L", "space_id": sid}, headers=headers); assert r.status_code in (200, 201), r.text
+    lid = r.json()["id"]
+    payload = {"name": "T1", "space_id": sid, "list_id": lid}
+    r = client.post("/tasks/", json=payload, headers=headers); assert r.status_code in (200, 201), r.text
+    tid = r.json()["id"]
+    return wid, sid, lid, tid
+
+def test_comments_create_and_list(client):
+    _register(client, "owner@example.com")
+    owner_token = _login_token(client, "owner@example.com")
+    owner_headers = _auth_headers(owner_token)
+    _, _, _, task_id = _create_workspace_space_list_task(client, owner_headers)
+
+    r = client.post(f"/tasks/{task_id}/comments", json={"body": "First!"}, headers=owner_headers)
+    assert r.status_code in (200, 201), r.text
+    comment = r.json()
+    assert comment["task_id"] == task_id
+    assert comment["body"] == "First!"
+    assert "id" in comment
+
+    r = client.get(f"/tasks/{task_id}/comments", headers=owner_headers)
+    assert r.status_code == 200, r.text
+    items = r.json()
+    assert isinstance(items, list)
+    assert any(c["body"] == "First!" for c in items)
+
+def test_comments_forbidden_for_outsider(client):
+    _register(client, "owner2@example.com")
+    owner_token = _login_token(client, "owner2@example.com")
+    owner_headers = _auth_headers(owner_token)
+    _, _, _, task_id = _create_workspace_space_list_task(client, owner_headers)
+
+    _register(client, "outsider@example.com")
+    outsider_token = _login_token(client, "outsider@example.com")
+    outsider_headers = _auth_headers(outsider_token)
+
+    r = client.post(f"/tasks/{task_id}/comments", json={"body": "Hello"}, headers=outsider_headers)
+    assert r.status_code == 403, r.text
+    r = client.get(f"/tasks/{task_id}/comments", headers=outsider_headers)
+    assert r.status_code == 403, r.text
+
+def test_comments_pagination_and_edit_delete(client):
+    _register(client, "author@example.com")
+    token = _login_token(client, "author@example.com")
+    headers = _auth_headers(token)
+    _, _, _, task_id = _create_workspace_space_list_task(client, headers)
+
+    # create 3 comments
+    bodies = ["c1", "c2", "c3"]
+    ids = []
+    for b in bodies:
+        r = client.post(f"/tasks/{task_id}/comments", json={"body": b}, headers=headers)
+        assert r.status_code in (200, 201), r.text
+        ids.append(r.json()["id"])
+
+    # pagination: limit 2, offset 1
+    r = client.get(f"/tasks/{task_id}/comments?limit=2&offset=1", headers=headers)
+    assert r.status_code == 200, r.text
+    items = r.json()
+    assert len(items) == 2
+
+    # outsider cannot edit/delete
+    _register(client, "outs@example.com")
+    outsider_token = _login_token(client, "outs@example.com")
+    outsider_headers = _auth_headers(outsider_token)
+
+    r = client.put(
+        f"/tasks/{task_id}/comments/{ids[0]}",
+        json={"body": "edited"},
+        headers=outsider_headers,
+    )
+    assert r.status_code == 403 or r.status_code == 404, r.text
+
+    r = client.delete(f"/tasks/{task_id}/comments/{ids[0]}", headers=outsider_headers)
+    assert r.status_code in (403, 404), r.text
+
+    # author edits
+    r = client.put(
+        f"/tasks/{task_id}/comments/{ids[0]}",
+        json={"body": "edited by author"},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["body"] == "edited by author"
+
+    # author deletes
+    r = client.delete(f"/tasks/{task_id}/comments/{ids[0]}", headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["detail"].lower().startswith("comment deleted")
+
+    # ensure it no longer appears
+    r = client.get(f"/tasks/{task_id}/comments", headers=headers)
+    assert r.status_code == 200
+    bodies_after = [c["body"] for c in r.json()]
+    assert "edited by author" not in bodies_after
+
+
+
+
+
+# File: /tests/test_db_indexes.py | Version: 1.1 | Path: /tests/test_db_indexes.py
+from sqlalchemy import inspect
+from sqlalchemy.engine import Engine
+
+def _idx_names(engine: Engine, table_name: str) -> set[str]:
+    insp = inspect(engine)
+    return {i["name"] for i in insp.get_indexes(table_name)}
+
+def test_expected_indexes_exist(db_session):
+    engine = db_session.get_bind()
+    insp = inspect(engine)
+    tables = set(insp.get_table_names())
+
+    # task: single-column indexes come from index=True on columns
+    task_idx = _idx_names(engine, "task")
+    assert "ix_task_list_id" in task_idx
+    assert "ix_task_parent_task_id" in task_idx
+
+    # task_dependency: only check if table exists in this build
+    if "task_dependency" in tables:
+        dep_idx = _idx_names(engine, "task_dependency")
+        assert "ix_task_dependency_task_id" in dep_idx
+        assert "ix_task_dependency_depends_on_task_id" in dep_idx
+
+    # comment: composite index we added explicitly
+    comment_idx = _idx_names(engine, "comment")
+    assert "ix_comment_task_id_created_at" in comment_idx
+
+
+
+
+
+# File: /tests/test_move_subtask_api.py | Version: 1.1 | Path: /tests/test_move_subtask_api.py
+from typing import Dict
+from uuid import UUID
+
+import pytest
+
+
+def _auth_headers(token: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _register_and_login(client, email: str, password: str = "pass123") -> str:
+    r = client.post("/auth/register", json={"email": email, "password": password})
+    assert r.status_code in (200, 201), r.text
+    r = client.post(
+        "/auth/login",
+        data={"username": email, "password": password},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["access_token"]
+
+
+def _bootstrap(client, token: str):
+    # Workspace from registration
+    r = client.get("/workspaces/", headers=_auth_headers(token))
+    assert r.status_code == 200, r.text
+    ws = r.json()[0]
+
+    # Space
+    r = client.post(
+        "/spaces/",
+        json={"name": "S", "workspace_id": ws["id"]},
+        headers=_auth_headers(token),
+    )
+    assert r.status_code == 200, r.text
+    space = r.json()
+
+    # List A
+    r = client.post(
+        "/lists/",
+        json={"name": "L1", "space_id": space["id"]},
+        headers=_auth_headers(token),
+    )
+    assert r.status_code == 200, r.text
+    list_a = r.json()
+
+    # List B (different list, same space)
+    r = client.post(
+        "/lists/",
+        json={"name": "L2", "space_id": space["id"]},
+        headers=_auth_headers(token),
+    )
+    assert r.status_code == 200, r.text
+    list_b = r.json()
+
+    return ws, space, list_a, list_b
+
+
+def _create_task(client, token: str, list_id: str, space_id: str, name: str):
+    r = client.post(
+        "/tasks/",
+        json={"name": name, "list_id": list_id, "space_id": space_id},
+        headers=_auth_headers(token),
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_move_subtask_detach_and_cycle(client):
+    token = _register_and_login(client, "move+owner@example.com")
+    _, space, list_a, _ = _bootstrap(client, token)
+
+    parent = _create_task(client, token, list_a["id"], space["id"], "Parent")
+    # Create child as subtask under parent
+    r = client.post(
+        f"/tasks/{parent['id']}/subtasks",
+        json={"name": "Child", "list_id": list_a["id"], "space_id": space["id"]},
+        headers=_auth_headers(token),
+    )
+    assert r.status_code == 200, r.text
+    child = r.json()
+
+    # 1) Try to move parent under its own child -> should be 400 (cycle)
+    r = client.post(
+        f"/tasks/{parent['id']}/move",
+        json={"new_parent_task_id": child["id"]},
+        headers=_auth_headers(token),
+    )
+    assert r.status_code == 400, r.text
+    assert "cycle" in r.json()["detail"].lower()
+
+    # 2) Detach the child (new_parent_task_id = null) -> OK
+    r = client.post(
+        f"/tasks/{child['id']}/move",
+        json={"new_parent_task_id": None},
+        headers=_auth_headers(token),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["parent_task_id"] is None
+
+    # 3) Now move parent under the previously detached child -> OK (no cycle)
+    r = client.post(
+        f"/tasks/{parent['id']}/move",
+        json={"new_parent_task_id": child["id"]},
+        headers=_auth_headers(token),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["parent_task_id"] == child["id"]
+
+
+def test_move_subtask_same_list_rule(client):
+    token = _register_and_login(client, "move+samlist@example.com")
+    _, space, list_a, list_b = _bootstrap(client, token)
+
+    parent_a = _create_task(client, token, list_a["id"], space["id"], "Parent A")
+    child = _create_task(client, token, list_a["id"], space["id"], "Child (detached)")
+
+    # Same list: move is OK
+    r = client.post(
+        f"/tasks/{child['id']}/move",
+        json={"new_parent_task_id": parent_a["id"]},
+        headers=_auth_headers(token),
+    )
+    assert r.status_code == 200, r.text
+    moved = r.json()
+    assert moved["parent_task_id"] == parent_a["id"]
+
+    # Different list: should be 400
+    parent_b = _create_task(client, token, list_b["id"], space["id"], "Parent B")
+    r = client.post(
+        f"/tasks/{child['id']}/move",
+        json={"new_parent_task_id": parent_b["id"]},
+        headers=_auth_headers(token),
+    )
+    assert r.status_code == 400, r.text
+    assert "same list" in r.json()["detail"].lower()
+
+
+
+
+
+# File: tests/test_permissions_unit.py | Version: 1.0 | Path: /tests/test_permissions_unit.py
+import pytest
+from fastapi import HTTPException
+
+# Import the permission helpers we just added
+from app.core.permissions import (
+    Role,
+    has_min_role,
+    require_role,
+)
+
+# We will monkeypatch app.core.permissions.get_workspace_role
+# so these tests don't depend on DB models or fixtures.
+
+
+def test_has_min_role_true_when_admin_meets_member(monkeypatch):
+    # Arrange: pretend the user is ADMIN in this workspace
+    def fake_get_workspace_role(db, *, user_id, workspace_id):
+        return Role.ADMIN
+
+    import app.core.permissions as perms
+    monkeypatch.setattr(perms, "get_workspace_role", fake_get_workspace_role)
+
+    # Act + Assert
+    assert has_min_role(db=None, user_id="U1", workspace_id="W1", minimum=Role.MEMBER) is True
+
+
+def test_has_min_role_false_when_guest_does_not_meet_member(monkeypatch):
+    def fake_get_workspace_role(db, *, user_id, workspace_id):
+        return Role.GUEST
+
+    import app.core.permissions as perms
+    monkeypatch.setattr(perms, "get_workspace_role", fake_get_workspace_role)
+
+    assert has_min_role(db=None, user_id="U1", workspace_id="W1", minimum=Role.MEMBER) is False
+
+
+def test_require_role_allows_owner_when_min_admin(monkeypatch):
+    def fake_get_workspace_role(db, *, user_id, workspace_id):
+        return Role.OWNER
+
+    import app.core.permissions as perms
+    monkeypatch.setattr(perms, "get_workspace_role", fake_get_workspace_role)
+
+    resolved = require_role(db=None, user_id="U1", workspace_id="W1", minimum=Role.ADMIN)
+    assert resolved is Role.OWNER
+
+
+def test_require_role_denies_non_member(monkeypatch):
+    # User has no membership in the workspace
+    def fake_get_workspace_role(db, *, user_id, workspace_id):
+        return None
+
+    import app.core.permissions as perms
+    monkeypatch.setattr(perms, "get_workspace_role", fake_get_workspace_role)
+
+    with pytest.raises(HTTPException) as excinfo:
+        require_role(db=None, user_id="U1", workspace_id="W1", minimum=Role.GUEST)
+
+    err = excinfo.value
+    assert err.status_code == 403
+    assert "Requires role" in str(err.detail)
+
+
+def test_require_role_denies_member_when_min_admin(monkeypatch):
+    # Member tries an Admin+ action
+    def fake_get_workspace_role(db, *, user_id, workspace_id):
+        return Role.MEMBER
+
+    import app.core.permissions as perms
+    monkeypatch.setattr(perms, "get_workspace_role", fake_get_workspace_role)
+
+    with pytest.raises(HTTPException) as excinfo:
+        require_role(db=None, user_id="U1", workspace_id="W1", minimum=Role.ADMIN)
+
+    assert excinfo.value.status_code == 403
+
+
+
+
+
+# File: tests/test_protected.py | Version: 1.0 | Path: /tests/test_protected.py
+from fastapi.testclient import TestClient
+
+def _login(client: TestClient) -> str:
+    # assumes you already have a user from the auth test; if not, register quickly
+    client.post("/auth/register", json={"email": "p2@example.com", "password": "secret123"})
+    resp = client.post(
+        "/auth/login",
+        data={"username": "p2@example.com", "password": "secret123"},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    assert resp.status_code == 200
+    return resp.json()["access_token"]
+
+def test_protected_endpoint(client: TestClient):
+    token = _login(client)
+    r = client.get("/protected", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code in (200, 204)  # adjust based on your endpoint
+
+
+
+
+
+# File: /tests/test_router_smoke.py | Version: 1.0 | Path: /tests/test_router_smoke.py
+def test_openapi_has_core_task_routes(client):
+    # Ask FastAPI for its OpenAPI schema and verify key routes exist
+    r = client.get("/openapi.json")
+    assert r.status_code == 200, r.text
+    paths = r.json().get("paths", {})
+
+    expected = {
+        "/tasks/": ["post"],
+        "/tasks/{task_id}": ["get", "put", "delete"],
+        "/tasks/by-list/{list_id}": ["get"],
+        "/tasks/dependencies/": ["post"],
+        "/tasks/{task_id}/dependencies": ["get"],
+        "/tasks/{task_id}/subtasks": ["get", "post"],
+        "/tasks/{task_id}/move": ["post"],
+        "/tasks/{task_id}/comments": ["get", "post"],
+    }
+
+    missing = []
+    for p, methods in expected.items():
+        if p not in paths:
+            missing.append(f"{p} (missing path)")
+            continue
+        present = {m.lower() for m in paths[p].keys()}
+        for m in methods:
+            if m not in present:
+                missing.append(f"{p} missing {m.upper()}")
+
+    assert not missing, "Missing routes: " + ", ".join(missing)
+
+
+
+
+
+# File: /tests/test_subtasks.py | Version: 1.0 | Path: /tests/test_subtasks.py
+from uuid import UUID
+from typing import Dict
+
+import pytest
+
+from sqlalchemy.orm import Session
+
+from app.crud import task as crud_task
+from app.models.core_entities import WorkspaceMember, User  # type: ignore
+
+
+def _auth_headers(token: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _register_and_login(client, email: str, password: str = "pass123") -> str:
+    r = client.post("/auth/register", json={"email": email, "password": password})
+    assert r.status_code in (200, 201), r.text
+    r = client.post(
+        "/auth/login",
+        data={"username": email, "password": password},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    assert r.status_code == 200, r.text
+    token = r.json()["access_token"]
+    assert token
+    return token
+
+
+def _bootstrap_workspace_space_list(client, token: str):
+    # Grab the auto-created workspace for the logged-in user
+    r = client.get("/workspaces/", headers=_auth_headers(token))
+    assert r.status_code == 200, r.text
+    ws = r.json()[0]
+    workspace_id = ws["id"]
+
+    # Create a space
+    r = client.post(
+        "/spaces/",
+        json={"name": "Main Space", "workspace_id": workspace_id},
+        headers=_auth_headers(token),
+    )
+    assert r.status_code == 200, r.text
+    space = r.json()
+
+    # Create a list
+    r = client.post(
+        "/lists/",
+        json={"name": "Main List", "space_id": space["id"]},
+        headers=_auth_headers(token),
+    )
+    assert r.status_code == 200, r.text
+    lst = r.json()
+
+    return workspace_id, space, lst
+
+
+def _create_parent_task(client, token: str, list_id: str, space_id: str):
+    r = client.post(
+        "/tasks/",
+        json={
+            "name": "Parent Task",
+            "description": "root",
+            "status": "to_do",
+            "priority": "Normal",
+            "list_id": list_id,
+            "space_id": space_id,
+        },
+        headers=_auth_headers(token),
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_create_and_list_subtasks(client):
+    # User1 bootstraps workspace/space/list and a parent task
+    token = _register_and_login(client, "owner+subtasks@example.com")
+    workspace_id, space, lst = _bootstrap_workspace_space_list(client, token)
+    parent = _create_parent_task(client, token, lst["id"], space["id"])
+
+    # Create a subtask under the parent (router enforces same list)
+    r = client.post(
+        f"/tasks/{parent['id']}/subtasks",
+        json={
+            "name": "Child A",
+            "description": "child",
+            "status": "to_do",
+            "priority": "Normal",
+            "list_id": lst["id"],   # will be overridden to parent list (same value)
+            "space_id": space["id"] # required by schema; router rebuilds payload
+        },
+        headers=_auth_headers(token),
+    )
+    assert r.status_code == 200, r.text
+    child = r.json()
+    assert str(child["parent_task_id"]) == str(parent["id"])
+    assert str(child["list_id"]) == str(lst["id"])
+
+    # List back the subtasks
+    r = client.get(f"/tasks/{parent['id']}/subtasks", headers=_auth_headers(token))
+    assert r.status_code == 200, r.text
+    children = r.json()
+    assert isinstance(children, list) and len(children) == 1
+    assert str(children[0]["id"]) == str(child["id"])
+
+
+def test_create_subtask_requires_membership(client, db_session: Session):
+    # User1 owns workspace; User2 is an outsider
+    token_u1 = _register_and_login(client, "owner+guard@example.com")
+    token_u2 = _register_and_login(client, "outsider+guard@example.com")
+
+    workspace_id, space, lst = _bootstrap_workspace_space_list(client, token_u1)
+    parent = _create_parent_task(client, token_u1, lst["id"], space["id"])
+
+    # Outsider tries to create subtask -> 403
+    r = client.post(
+        f"/tasks/{parent['id']}/subtasks",
+        json={
+            "name": "Should Fail",
+            "list_id": lst["id"],
+            "space_id": space["id"],
+        },
+        headers=_auth_headers(token_u2),
+    )
+    assert r.status_code == 403, r.text
+
+    # Add User2 as Member, retry -> 200
+    user2 = db_session.query(User).filter(User.email == "outsider+guard@example.com").first()
+    db_session.add(WorkspaceMember(workspace_id=workspace_id, user_id=user2.id, role="Member", is_active=True))
+    db_session.commit()
+
+    r = client.post(
+        f"/tasks/{parent['id']}/subtasks",
+        json={
+            "name": "Now Works",
+            "list_id": lst["id"],
+            "space_id": space["id"],
+        },
+        headers=_auth_headers(token_u2),
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_move_subtask_cycle_prevention(client, db_session: Session):
+    token = _register_and_login(client, "owner+cycle@example.com")
+    _, space, lst = _bootstrap_workspace_space_list(client, token)
+
+    # Create parent via API
+    parent = _create_parent_task(client, token, lst["id"], space["id"])
+    parent_id = UUID(parent["id"])
+
+    # Create child via API (as subtask)
+    r = client.post(
+        f"/tasks/{parent['id']}/subtasks",
+        json={"name": "Child", "list_id": lst["id"], "space_id": space["id"]},
+        headers=_auth_headers(token),
+    )
+    assert r.status_code == 200, r.text
+    child = r.json()
+    child_id = UUID(child["id"])
+
+    # Try to move parent under child -> should raise ValueError (cycle)
+    with pytest.raises(ValueError):
+        crud_task.move_subtask(db_session, child_task_id=parent_id, new_parent_task_id=child_id)
+
+
+
+
+
+# File: /tests/test_tags_api.py | Version: 1.2 | Path: /tests/test_tags_api.py
+from typing import Dict, Tuple
+
+def _register(client, email: str, password: str = "Passw0rd!", full_name: str = "Test User"):
+    r = client.post("/auth/register", json={"email": email, "password": password, "full_name": full_name})
+    assert r.status_code in (200, 201), r.text
+    return r.json()
+
+def _login_token(client, email: str, password: str = "Passw0rd!") -> str:
+    r = client.post(
+        "/auth/token",
+        data={"username": email, "password": password, "grant_type": "password"},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    if r.status_code == 200 and "access_token" in r.json():
+        return r.json()["access_token"]
+    r = client.post("/auth/login", json={"username": email, "password": password})
+    assert r.status_code == 200 and "access_token" in r.json(), r.text
+    return r.json()["access_token"]
+
+def _auth_headers(token: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+def _create_workspace_space_list_task(client, headers) -> Tuple[str, str, str, str]:
+    r = client.post("/workspaces/", json={"name": "W"}, headers=headers); assert r.status_code in (200, 201), r.text
+    wid = r.json()["id"]
+    r = client.post("/spaces/", json={"name": "S", "workspace_id": wid}, headers=headers); assert r.status_code in (200, 201), r.text
+    sid = r.json()["id"]
+    r = client.post("/lists/", json={"name": "L", "space_id": sid}, headers=headers); assert r.status_code in (200, 201), r.text
+    lid = r.json()["id"]
+    payload = {"name": "T1", "space_id": sid, "list_id": lid}
+    r = client.post("/tasks/", json=payload, headers=headers); assert r.status_code in (200, 201), r.text
+    tid = r.json()["id"]
+    return wid, sid, lid, tid
+
+def test_tags_create_list_assign_unassign_filter(client):
+    _register(client, "owner+tags@example.com")
+    token = _login_token(client, "owner+tags@example.com")
+    headers = _auth_headers(token)
+
+    workspace_id, space_id, list_id, task_id = _create_workspace_space_list_task(client, headers)
+
+    # create two tags in workspace
+    r = client.post(f"/workspaces/{workspace_id}/tags", json={"name": "Urgent", "color": "red"}, headers=headers)
+    assert r.status_code in (200, 201), r.text
+    tag1 = r.json()
+
+    r = client.post(f"/workspaces/{workspace_id}/tags", json={"name": "Client A"}, headers=headers)
+    assert r.status_code in (200, 201), r.text
+    tag2 = r.json()
+
+    # list workspace tags
+    r = client.get(f"/workspaces/{workspace_id}/tags", headers=headers)
+    assert r.status_code == 200, r.text
+    names = [t["name"] for t in r.json()]
+    assert "Urgent" in names and "Client A" in names
+
+    # assign tag1 to the task
+    r = client.post(f"/tasks/{task_id}/tags/{tag1['id']}", headers=headers)
+    assert r.status_code == 200, r.text
+
+    # list tags on task
+    r = client.get(f"/tasks/{task_id}/tags", headers=headers)
+    assert r.status_code == 200, r.text
+    names = [t["name"] for t in r.json()]
+    assert "Urgent" in names
+
+    # filter tasks by tag (single-tag endpoint)
+    r = client.get(f"/tags/{tag1['id']}/tasks", headers=headers)
+    assert r.status_code == 200, r.text
+    ids = [t["id"] for t in r.json()]
+    assert task_id in ids
+
+    # unassign
+    r = client.delete(f"/tasks/{task_id}/tags/{tag1['id']}", headers=headers)
+    assert r.status_code == 200, r.text
+
+    # confirm removal
+    r = client.get(f"/tasks/{task_id}/tags", headers=headers)
+    assert r.status_code == 200, r.text
+    names = [t["name"] for t in r.json()]
+    assert "Urgent" not in names
+
+def test_tags_permissions(client):
+    _register(client, "owner+tags2@example.com")
+    owner_token = _login_token(client, "owner+tags2@example.com")
+    owner_headers = _auth_headers(owner_token)
+
+    _register(client, "outsider+tags2@example.com")
+    out_token = _login_token(client, "outsider+tags2@example.com")
+    out_headers = _auth_headers(out_token)
+
+    workspace_id, space_id, list_id, task_id = _create_workspace_space_list_task(client, owner_headers)
+
+    # owner creates a tag
+    r = client.post(f"/workspaces/{workspace_id}/tags", json={"name": "Internal"}, headers=owner_headers)
+    assert r.status_code in (200, 201), r.text
+    tag = r.json()
+
+    # outsider cannot list workspace tags
+    r = client.get(f"/workspaces/{workspace_id}/tags", headers=out_headers)
+    assert r.status_code == 403, r.text
+
+    # outsider cannot assign the owner's tag to the owner's task
+    r = client.post(f"/tasks/{task_id}/tags/{tag['id']}", headers=out_headers)
+    assert r.status_code in (403, 404), r.text
+
+def test_filter_tasks_by_multiple_tags_any_all(client):
+    _register(client, "owner+multitags@example.com")
+    token = _login_token(client, "owner+multitags@example.com")
+    headers = _auth_headers(token)
+    workspace_id, space_id, list_id, task1_id = _create_workspace_space_list_task(client, headers)
+
+    # second task in same list/space
+    r = client.post("/tasks/", json={"name": "T2", "space_id": space_id, "list_id": list_id}, headers=headers)
+    assert r.status_code in (200, 201), r.text
+    task2_id = r.json()["id"]
+
+    # tags
+    r = client.post(f"/workspaces/{workspace_id}/tags", json={"name": "Bug"}, headers=headers); tag_bug = r.json()
+    r = client.post(f"/workspaces/{workspace_id}/tags", json={"name": "High"}, headers=headers); tag_high = r.json()
+    r = client.post(f"/workspaces/{workspace_id}/tags", json={"name": "Backend"}, headers=headers); tag_be = r.json()
+
+    # assign: task1 -> Bug+High ; task2 -> High only
+    assert client.post(f"/tasks/{task1_id}/tags/{tag_bug['id']}", headers=headers).status_code == 200
+    assert client.post(f"/tasks/{task1_id}/tags/{tag_high['id']}", headers=headers).status_code == 200
+    assert client.post(f"/tasks/{task2_id}/tags/{tag_high['id']}", headers=headers).status_code == 200
+
+    # ANY: should return both tasks when filtering by [Bug, High]
+    url_any = f"/workspaces/{workspace_id}/tasks/by-tags?tag_ids={tag_bug['id']}&tag_ids={tag_high['id']}&match=any"
+    r = client.get(url_any, headers=headers); assert r.status_code == 200, r.text
+    got_any = {t["id"] for t in r.json()}
+    assert {task1_id, task2_id}.issubset(got_any)
+
+    # ALL: should return only task1 (has both Bug and High)
+    url_all = f"/workspaces/{workspace_id}/tasks/by-tags?tag_ids={tag_bug['id']}&tag_ids={tag_high['id']}&match=all"
+    r = client.get(url_all, headers=headers); assert r.status_code == 200, r.text
+    got_all = [t["id"] for t in r.json()]
+    assert got_all == [task1_id]
+
+def test_bulk_assign_unassign(client):
+    _register(client, "owner+bulk@example.com")
+    token = _login_token(client, "owner+bulk@example.com")
+    headers = _auth_headers(token)
+    workspace_id, space_id, list_id, task_id = _create_workspace_space_list_task(client, headers)
+
+    # make 3 tags
+    t1 = client.post(f"/workspaces/{workspace_id}/tags", json={"name": "Design"}, headers=headers).json()
+    t2 = client.post(f"/workspaces/{workspace_id}/tags", json={"name": "API"}, headers=headers).json()
+    t3 = client.post(f"/workspaces/{workspace_id}/tags", json={"name": "Low"}, headers=headers).json()
+
+    # bulk assign two
+    r = client.post(f"/tasks/{task_id}/tags:assign", json={"tag_ids": [t1["id"], t2["id"]]}, headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["assigned"] >= 2
+
+    # bulk unassign one
+    r = client.post(f"/tasks/{task_id}/tags:unassign", json={"tag_ids": [t1["id"]]}, headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["unassigned"] >= 1
+
+    # verify state
+    names = [t["name"] for t in client.get(f"/tasks/{task_id}/tags", headers=headers).json()]
+    assert "API" in names and "Design" not in names
+
+
+
+
+
+# File: /tests/test_tasks_filter.py | Version: 1.0 | Path: /tests/test_tasks_filter.py
+"""
+Tests for the unified filtering & grouping feature:
+- Focused unit tests that validate schema rules, grouping behavior, and endpoint guards.
+- Safe to run now without depending on full DB seeding or JWT because they call
+  pure functions and FastAPI route logic directly, with controlled monkeypatches.
+
+Once custom fields are added, we will extend with DB-backed integration tests that
+seed tasks/tags and assert end-to-end API results.
+"""
+
+from __future__ import annotations
+
+# File: tests/test_tasks_filter.py | Version: 1.0 | Path: /tests/test_tasks_filter.py
+import pytest
+try:
+    from app.routers.tasks_filter import router as _router  # noqa
+except Exception:
+    pytest.skip("tasks_filter router not present/ready; skipping until implemented", allow_module_level=True)
+
+from fastapi import HTTPException
+
+# Schemas / CRUD helpers under test
+from app.schemas.filters import (
+    FilterPayload,
+    FilterRule,
+    FilterOperator,
+    TaskField,
+    Scope,
+    TagsFilter,
+    TagsMatch,
+    GroupBy,
+)
+from app.crud.filtering import group_tasks
+
+# Endpoint function (we call it directly to validate path/payload guard)
+from app.routers.tasks_filter import filter_tasks
+
+
+# -----------------------------
+# Helpers
+# -----------------------------
+
+class _TaskStub:
+    """A minimal task-like object for grouping unit tests (no DB required)."""
+    def __init__(self, id, name, status=None, priority=None, due_date=None, start_date=None, list_id=None, assignee_id=None):
+        self.id = id
+        self.name = name
+        self.status = status
+        self.priority = priority
+        self.due_date = due_date
+        self.start_date = start_date
+        self.list_id = list_id
+        self.assignee_id = assignee_id
+
+
+def _mk_payload(
+    workspace_id: str,
+    scope_type: str = "workspace",
+    scope_id: str | None = None,
+    filters: list[FilterRule] | None = None,
+    tags: TagsFilter | None = None,
+    group_by: GroupBy | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> FilterPayload:
+    """Create a FilterPayload with a single active scope."""
+    scope_kwargs = {
+        "workspace_id": None,
+        "space_id": None,
+        "folder_id": None,
+        "list_id": None,
+    }
+    if scope_type == "workspace":
+        scope_kwargs["workspace_id"] = workspace_id
+    elif scope_type == "space":
+        scope_kwargs["space_id"] = scope_id or "space-1"
+    elif scope_type == "folder":
+        scope_kwargs["folder_id"] = scope_id or "folder-1"
+    elif scope_type == "list":
+        scope_kwargs["list_id"] = scope_id or "list-1"
+    else:
+        raise ValueError("invalid scope_type")
+
+    return FilterPayload(
+        scope=Scope(**scope_kwargs),
+        filters=filters or [],
+        tags=tags,
+        group_by=group_by,
+        limit=limit,
+        offset=offset,
+    )
+
+
+# -----------------------------
+# Schema / validation tests
+# -----------------------------
+
+def test_scope_requires_one_identifier():
+    # Missing all scope identifiers should fail
+    with pytest.raises(ValueError):
+        Scope()
+
+def test_payload_accepts_workspace_scope():
+    p = _mk_payload(workspace_id="ws-1", scope_type="workspace")
+    assert p.scope.workspace_id == "ws-1"
+
+def test_payload_accepts_nonworkspace_scopes():
+    p_space = _mk_payload("ws-1", scope_type="space", scope_id="sp-9")
+    assert p_space.scope.space_id == "sp-9"
+    p_folder = _mk_payload("ws-1", scope_type="folder", scope_id="fo-3")
+    assert p_folder.scope.folder_id == "fo-3"
+    p_list = _mk_payload("ws-1", scope_type="list", scope_id="li-7")
+    assert p_list.scope.list_id == "li-7"
+
+def test_filter_rule_variants_construct():
+    # Covers equality, set-membership, and emptiness operators
+    FilterRule(field=TaskField.status, op=FilterOperator.eq, value="open")
+    FilterRule(field=TaskField.priority, op=FilterOperator.in_, value=["high", "urgent"])
+    FilterRule(field=TaskField.name, op=FilterOperator.contains, value="login")
+    FilterRule(field=TaskField.start_date, op=FilterOperator.is_empty)
+    FilterRule(field=TaskField.due_date, op=FilterOperator.is_not_empty)
+    # No exception means schema accepts these forms
+
+
+# -----------------------------
+# Grouping unit tests (pure function)
+# -----------------------------
+
+def test_group_tasks_by_status_handles_no_value():
+    tasks = [
+        _TaskStub(id="t1", name="A", status="Open"),
+        _TaskStub(id="t2", name="B", status=None),
+        _TaskStub(id="t3", name="C", status="Done"),
+    ]
+    groups = group_tasks(tasks, group_by="status")
+    # Convert to dict for easier assertions
+    gmap = {g["group"]: g["tasks"] for g in groups}
+    assert "Open" in gmap
+    assert "Done" in gmap
+    assert "No Value" in gmap
+    assert {t["id"] for t in gmap["No Value"]} == {"t2"}
+
+def test_group_tasks_by_priority_and_due_date_buckets():
+    tasks = [
+        _TaskStub(id="t1", name="A", priority="High"),
+        _TaskStub(id="t2", name="B", priority=None),
+    ]
+    g_by_priority = group_tasks(tasks, group_by="priority")
+    gmap = {g["group"]: g["tasks"] for g in g_by_priority}
+    assert "High" in gmap and "No Value" in gmap
+
+    # due_date grouping should stringify or bucket unknowns under "No Value"
+    tasks2 = [
+        _TaskStub(id="t3", name="C", due_date=None),
+        _TaskStub(id="t4", name="D", due_date=None),
+    ]
+    g_by_due = group_tasks(tasks2, group_by="due_date")
+    gmap_due = {g["group"]: g["tasks"] for g in g_by_due}
+    assert "No Value" in gmap_due
+    assert {t["id"] for t in gmap_due["No Value"]} == {"t3", "t4"}
+
+def test_group_tasks_default_single_bucket_when_no_groupby():
+    tasks = [_TaskStub(id="t1", name="A"), _TaskStub(id="t2", name="B")]
+    groups = group_tasks(tasks, group_by=None)
+    assert len(groups) == 1
+    assert groups[0]["group"] is None
+    assert {t["id"] for t in groups[0]["tasks"]} == {"t1", "t2"}
+
+
+# -----------------------------
+# Endpoint guard tests (no DB)
+# -----------------------------
+
+def test_filter_endpoint_rejects_mismatched_workspace_id(monkeypatch):
+    """
+    The router must reject requests where the path workspace_id
+    does not match payload.scope.workspace_id (spec guard).
+    """
+    # Monkeypatch workspace-membership check to a no-op for this unit test
+    from app.routers import tasks_filter as mod
+
+    def _no_op_require_member(db, user_id, workspace_id):
+        return True
+
+    monkeypatch.setattr(mod, "require_workspace_member", _no_op_require_member, raising=True)
+
+    # Build a payload that wrongly declares a different workspace_id
+    payload = _mk_payload(workspace_id="ws-payload")
+    # Minimal stand-ins for FastAPI-injected deps
+    fake_db = None
+
+    class _User:
+        id = "u1"
+
+    with pytest.raises(HTTPException) as exc:
+        filter_tasks(
+            workspace_id="ws-path",
+            payload=payload,
+            db=fake_db,
+            current_user=_User(),
+        )
+    assert exc.value.status_code == 400
+    assert "must match path workspace_id" in exc.value.detail
+
+
+def test_tags_filter_payload_any_and_all():
+    # Ensures the payload accepts both ANY and ALL modes
+    any_tags = TagsFilter(tag_ids=["tag-1", "tag-2"], match=TagsMatch.any)
+    all_tags = TagsFilter(tag_ids=["tag-3", "tag-4"], match=TagsMatch.all)
+
+    p1 = _mk_payload("ws-1", tags=any_tags)
+    p2 = _mk_payload("ws-1", tags=all_tags)
+
+    assert p1.tags.match == TagsMatch.any
+    assert p2.tags.match == TagsMatch.all
+
+
+
+
+
+from typing import Dict, Tuple
+
+def _register(client, email: str, password: str = "Passw0rd!", full_name: str = "Test User"):
+    r = client.post("/auth/register", json={"email": email, "password": password, "full_name": full_name})
+    assert r.status_code in (200, 201), r.text
+    return r.json()
+
+def _login_token(client, email: str, password: str = "Passw0rd!") -> str:
+    r = client.post(
+        "/auth/token",
+        data={"username": email, "password": password, "grant_type": "password"},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    if r.status_code == 200 and "access_token" in r.json():
+        return r.json()["access_token"]
+    r = client.post("/auth/login", json={"username": email, "password": password})
+    assert r.status_code == 200 and "access_token" in r.json(), r.text
+    return r.json()["access_token"]
+
+def _auth_headers(token: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+def _bootstrap(client, headers) -> Tuple[str, str, str, str]:
+    r = client.post("/workspaces/", json={"name": "W"}, headers=headers); wid = r.json()["id"]
+    r = client.post("/spaces/", json={"name": "S", "workspace_id": wid}, headers=headers); sid = r.json()["id"]
+    r = client.post("/lists/", json={"name": "L", "space_id": sid}, headers=headers); lid = r.json()["id"]
+    r = client.post("/tasks/", json={"name": "T1", "list_id": lid, "space_id": sid}, headers=headers); tid = r.json()["id"]
+    return wid, sid, lid, tid
+
+def test_watch_follow_unfollow_and_list(client):
+    _register(client, "owner+watch@example.com")
+    token = _login_token(client, "owner+watch@example.com")
+    headers = _auth_headers(token)
+    wid, sid, lid, tid = _bootstrap(client, headers)
+
+    # initially empty
+    r = client.get(f"/tasks/{tid}/watchers", headers=headers)
+    assert r.status_code == 200 and r.json() == [], r.text
+
+    # follow -> listed once
+    r = client.post(f"/tasks/{tid}/watch", headers=headers); assert r.status_code == 200, r.text
+    r = client.get(f"/tasks/{tid}/watchers", headers=headers)
+    users = [w["user_id"] for w in r.json()]
+    assert len(users) == 1
+
+    # idempotent follow
+    r = client.post(f"/tasks/{tid}/watch", headers=headers); assert r.status_code == 200, r.text
+    r = client.get(f"/tasks/{tid}/watchers", headers=headers)
+    users = [w["user_id"] for w in r.json()]
+    assert len(users) == 1
+
+    # unfollow
+    r = client.delete(f"/tasks/{tid}/watch", headers=headers); assert r.status_code == 200, r.text
+    r = client.get(f"/tasks/{tid}/watchers", headers=headers)
+    assert r.json() == []
+
+def test_watch_permissions(client):
+    _register(client, "owner+watch2@example.com")
+    token_owner = _login_token(client, "owner+watch2@example.com")
+    h_owner = _auth_headers(token_owner)
+
+    _register(client, "outsider+watch2@example.com")
+    token_out = _login_token(client, "outsider+watch2@example.com")
+    h_out = _auth_headers(token_out)
+
+    wid, sid, lid, tid = _bootstrap(client, h_owner)
+
+    # outsider cannot view watchers (no workspace membership)
+    r = client.get(f"/tasks/{tid}/watchers", headers=h_out)
+    assert r.status_code == 403, r.text
+
+    # outsider cannot follow/unfollow
+    assert client.post(f"/tasks/{tid}/watch", headers=h_out).status_code == 403
+    assert client.delete(f"/tasks/{tid}/watch", headers=h_out).status_code in (403, 404)
+
+
+
+
+
+from typing import Dict, Tuple
+
+def _register(client, email: str, password: str = "Passw0rd!", full_name: str = "Test User"):
+    r = client.post("/auth/register", json={"email": email, "password": password, "full_name": full_name})
+    assert r.status_code in (200, 201), r.text
+    return r.json()
+
+def _login_token(client, email: str, password: str = "Passw0rd!") -> str:
+    r = client.post(
+        "/auth/token",
+        data={"username": email, "password": password, "grant_type": "password"},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    if r.status_code == 200 and "access_token" in r.json():
+        return r.json()["access_token"]
+    r = client.post("/auth/login", json={"username": email, "password": password})
+    assert r.status_code == 200 and "access_token" in r.json(), r.text
+    return r.json()["access_token"]
+
+def _auth_headers(token: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+def _bootstrap(client, headers) -> Tuple[str, str, str, str]:
+    r = client.post("/workspaces/", json={"name": "W"}, headers=headers); wid = r.json()["id"]
+    r = client.post("/spaces/", json={"name": "S", "workspace_id": wid}, headers=headers); sid = r.json()["id"]
+    r = client.post("/lists/", json={"name": "L", "space_id": sid}, headers=headers); lid = r.json()["id"]
+    r = client.post("/tasks/", json={"name": "T1", "list_id": lid, "space_id": sid}, headers=headers); tid = r.json()["id"]
+    return wid, sid, lid, tid
+
+def test_comment_auto_adds_watcher(client):
+    _register(client, "owner+auto@example.com")
+    token = _login_token(client, "owner+auto@example.com")
+    headers = _auth_headers(token)
+    wid, sid, lid, tid = _bootstrap(client, headers)
+
+    # initially no watchers
+    r = client.get(f"/tasks/{tid}/watchers", headers=headers)
+    assert r.status_code == 200 and r.json() == [], r.text
+
+    # add a comment
+    r = client.post(f"/tasks/{tid}/comments", json={"body": "hello"}, headers=headers)
+    assert r.status_code in (200, 201), r.text
+
+    # now we're a watcher (exactly one)
+    r = client.get(f"/tasks/{tid}/watchers", headers=headers)
+    users = [w["user_id"] for w in r.json()]
+    assert len(users) == 1
+
+
+
+
+
+# File: /tests/test_write_guard_integration.py | Version: 1.0
+from typing import Dict
+
+from sqlalchemy.orm import Session
+
+from app.models.core_entities import WorkspaceMember, User  # type: ignore
+
+
+def _auth_headers(token: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _register_and_login(client, email: str, password: str = "pass123") -> str:
+    # register
+    r = client.post("/auth/register", json={"email": email, "password": password})
+    assert r.status_code in (200, 201)
+    # login
+    r = client.post(
+        "/auth/login",
+        data={"username": email, "password": password},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    assert r.status_code == 200, r.text
+    token = r.json().get("access_token")
+    assert token, "No access_token returned"
+    return token
+
+
+def test_write_requires_membership__outsider_403_then_member_200(client, db_session: Session):
+    """
+    Flow:
+      - User1 registers (auto-creates Workspace A; is Owner).
+      - User2 tries to create a Space in Workspace A -> 403 (not a member).
+      - We add User2 as Member in Workspace A (DB insert).
+      - User2 retries -> 200.
+    """
+    # Users
+    u1_email = "owner@example.com"
+    u2_email = "outsider@example.com"
+
+    token_u1 = _register_and_login(client, u1_email)
+    token_u2 = _register_and_login(client, u2_email)
+
+    # Find Workspace A (created for User1 on register)
+    r = client.get("/workspaces/", headers=_auth_headers(token_u1))
+    assert r.status_code == 200, r.text
+    workspaces = r.json()
+    assert isinstance(workspaces, list) and len(workspaces) >= 1
+    workspace_id = workspaces[0]["id"]
+
+    # 1) Outsider tries to create a Space -> should be 403
+    payload = {"name": "Secured Space", "workspace_id": workspace_id}
+    r = client.post("/spaces/", json=payload, headers=_auth_headers(token_u2))
+    assert r.status_code == 403, f"Expected 403 for outsider, got {r.status_code}: {r.text}"
+
+    # 2) Add User2 as MEMBER in Workspace A (DB insert)
+    user2 = db_session.query(User).filter(User.email == u2_email).first()
+    assert user2, "User2 not found after registration"
+    db_session.add(
+        WorkspaceMember(
+            user_id=str(user2.id),
+            workspace_id=str(workspace_id),
+            role="Member",
+        )
+    )
+    db_session.commit()
+
+    # 3) Retry as Member -> should be 200
+    r = client.post("/spaces/", json=payload, headers=_auth_headers(token_u2))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["name"] == "Secured Space"
+    assert str(body["workspace_id"]) == str(workspace_id)
+
+
+
+
+

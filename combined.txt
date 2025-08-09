@@ -1,0 +1,185 @@
+﻿
+		D:\task_manager\
+	  			D:\task_manager\.gitignore
+	  			D:\task_manager\debug_metadata.py
+	  			D:\task_manager\Project_Onboarding_Snapshot.md
+	  			D:\task_manager\README.md
+	  			D:\task_manager\run_tests.bat
+	  			D:\task_manager\test.db
+	  			D:\task_manager\tree_all.txt
+	  			D:\task_manager\__structure.txt
+		D:\task_manager\app\
+	  			D:\task_manager\app\dependencies.py
+	  			D:\task_manager\app\main.py
+	  			D:\task_manager\app\security.py
+	  			D:\task_manager\app\__init__.py
+		D:\task_manager\app\core\
+	  			D:\task_manager\app\core\permissions.py
+		D:\task_manager\app\crud\
+	  			D:\task_manager\app\crud\core_entities.py
+	  			D:\task_manager\app\crud\task.py
+	  			D:\task_manager\app\crud\__init__.py
+		D:\task_manager\app\db\
+	  			D:\task_manager\app\db\base_class.py
+	  			D:\task_manager\app\db\session.py
+	  			D:\task_manager\app\db\__init__.py
+		D:\task_manager\app\models\
+	  			D:\task_manager\app\models\core_entities.py
+	  			D:\task_manager\app\models\__init__.py
+		D:\task_manager\app\routers\
+	  			D:\task_manager\app\routers\auth.py
+	  			D:\task_manager\app\routers\auth_dependencies.py
+	  			D:\task_manager\app\routers\core_entities.py
+	  			D:\task_manager\app\routers\task.py
+	  			D:\task_manager\app\routers\__init__.py
+		D:\task_manager\app\schemas\
+	  			D:\task_manager\app\schemas\auth.py
+	  			D:\task_manager\app\schemas\core_entities.py
+	  			D:\task_manager\app\schemas\task.py
+	  			D:\task_manager\app\schemas\user.py
+	  			D:\task_manager\app\schemas\__init__.py
+		D:\task_manager\tests\
+	  			D:\task_manager\tests\conftest.py
+	  			D:\task_manager\tests\test_auth.py
+	  			D:\task_manager\tests\test_protected.py
+
+
+
+
+
+fastapi>=0.110
+uvicorn[standard]>=0.23
+pydantic>=2,<3
+sqlalchemy>=2.0.0
+python-jose[cryptography]>=3.3
+passlib[bcrypt]>=1.7
+python-multipart>=0.0.6
+email-validator>=2.0
+pytest>=7
+httpx>=0.24
+
+
+
+
+
+Folder PATH listing for volume Data Drive
+Volume serial number is 4A07-9814
+D:.
+|   @echo
+|   debug_metadata.py
+|   del
+|   echo
+|   Project_Onboarding_Snapshot.md
+|   pytest
+|   python
+|   run_tests.bat
+|   test.db
+|   tree_all.txt
+|   
++---.pytest_cache
+|   |   .gitignore
+|   |   CACHEDIR.TAG
+|   |   README.md
+|   |   
+|   \---v
+|       \---cache
+|               lastfailed
+|               nodeids
+|               
++---app
+|   |   dependencies.py
+|   |   main.py
+|   |   security.py
+|   |   __init__.py
+|   |   
+|   +---core
+|   |   |   permissions.py
+|   |   |   
+|   |   \---__pycache__
+|   |           permissions.cpython-313.pyc
+|   |           security.cpython-313.pyc
+|   |           
+|   +---crud
+|   |   |   core_entities.py
+|   |   |   task.py
+|   |   |   __init__.py
+|   |   |   
+|   |   \---__pycache__
+|   |           core_entities.cpython-313.pyc
+|   |           
+|   +---db
+|   |   |   base_class.py
+|   |   |   database.py
+|   |   |   session.py
+|   |   |   __init__.py
+|   |   |   
+|   |   \---__pycache__
+|   |           base_class.cpython-313.pyc
+|   |           database.cpython-313.pyc
+|   |           init_db.cpython-313.pyc
+|   |           __init__.cpython-313.pyc
+|   |           
+|   +---models
+|   |   |   base.py
+|   |   |   comment.py
+|   |   |   core_entities.py
+|   |   |   list.py
+|   |   |   role.py
+|   |   |   tag.py
+|   |   |   task.py
+|   |   |   task_assignee.py
+|   |   |   task_tag.py
+|   |   |   time_entry.py
+|   |   |   token.py
+|   |   |   workspace_member.py
+|   |   |   __init__.py
+|   |   |   
+|   |   \---__pycache__
+|   |           core_entities.cpython-313.pyc
+|   |           user.cpython-313.pyc
+|   |           __init__.cpython-313.pyc
+|   |           
+|   +---routers
+|   |   |   auth.py
+|   |   |   core_entities.py
+|   |   |   task.py
+|   |   |   __init__.py
+|   |   |   
+|   |   \---__pycache__
+|   |           auth.cpython-313.pyc
+|   |           core_entities.cpython-313.pyc
+|   |           task.cpython-313.pyc
+|   |           __init__.cpython-313.pyc
+|   |           
+|   +---schemas
+|   |   |   core_entities.py
+|   |   |   task.py
+|   |   |   user.py
+|   |   |   __init__.py
+|   |   |   
+|   |   \---__pycache__
+|   |           core_entities.cpython-313.pyc
+|   |           task.cpython-313.pyc
+|   |           user.cpython-313.pyc
+|   |           __init__.cpython-313.pyc
+|   |           
+|   \---__pycache__
+|           main.cpython-313.pyc
+|           security.cpython-313.pyc
+|           __init__.cpython-313.pyc
+|           
+\---tests
+    |   conftest.py
+    |   test_auth.py
+    |   test_protected.py
+    |   
+    \---__pycache__
+            conftest.cpython-313-pytest-8.4.1.pyc
+            test_auth.cpython-313-pytest-8.4.1.pyc
+            test_protected.cpython-313-pytest-8.4.1.pyc
+            
+
+
+
+
+
