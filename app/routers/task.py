@@ -1,3 +1,4 @@
+#File: /app/routers/task.py | Version: 1.10 | Path: /app/routers/task.py
 from typing import List
 from uuid import UUID
 
@@ -7,6 +8,8 @@ from sqlalchemy.orm import Session
 from app.crud import core_entities as crud_core
 from app.crud import task as crud_task
 from app.crud import comments as crud_comments
+from app.crud import watchers as crud_watchers
+
 from app.db.session import get_db
 from app.schemas import task as schema
 from app.schemas import comments as comment_schema
@@ -287,6 +290,10 @@ def create_comment(
     db: Session = Depends(get_db),
     current_user=Depends(get_me),
 ):
+    """
+    Create a comment on a task (Member+ required in the task's workspace).
+    Also auto-follows the task for the commenting user (idempotent).
+    """
     task = crud_task.get_task(db, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -298,6 +305,7 @@ def create_comment(
     if not space:
         raise HTTPException(status_code=404, detail="Space not found")
 
+    # Permission: Member+ in workspace
     require_role(
         db,
         user_id=str(current_user.id),
@@ -308,6 +316,14 @@ def create_comment(
     created = crud_comments.create_comment(
         db, task_id=task_id, user_id=str(current_user.id), body=body.body
     )
+
+    # Auto-follow: commenter becomes a watcher (idempotent; swallow non-fatal errors)
+    try:
+        crud_watchers.follow_task(db, task_id=task_id, user_id=str(current_user.id))
+    except Exception:
+        # We don't want a watcher failure to block comment creation
+        pass
+
     return created
 
 
