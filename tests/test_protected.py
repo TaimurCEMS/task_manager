@@ -1,4 +1,4 @@
-# File: tests/test_protected.py | Version: 1.0 | Path: /tests/test_protected.py
+# File: tests/test_protected.py | Version: 1.1 (Corrected)
 from fastapi.testclient import TestClient
 
 def _login(client: TestClient) -> str:
@@ -14,5 +14,8 @@ def _login(client: TestClient) -> str:
 
 def test_protected_endpoint(client: TestClient):
     token = _login(client)
-    r = client.get("/protected", headers={"Authorization": f"Bearer {token}"})
-    assert r.status_code in (200, 204)  # adjust based on your endpoint
+    # FIX: The path must include the router's prefix "/auth"
+    r = client.get("/auth/protected", headers={"Authorization": f"Bearer {token}"})
+    
+    # The original assertion is correct, the path was the issue.
+    assert r.status_code in (200, 204)
