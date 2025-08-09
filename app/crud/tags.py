@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models import core_entities as models
 
+
 # -------- Tags (workspace-scoped) --------
 
 def create_tag(db: Session, *, workspace_id: UUID, name: str, color: Optional[str]) -> models.Tag:
@@ -143,6 +144,11 @@ def get_tasks_by_tags(
     limit: Optional[int] = None,
     offset: Optional[int] = None,
 ) -> List[models.Task]:
+    """
+    Return tasks in a workspace that match multiple tags.
+    match='any' -> task has at least one of the tags
+    match='all' -> task has all of the tags
+    """
     if not tag_ids:
         return []
 
@@ -158,11 +164,13 @@ def get_tasks_by_tags(
     )
 
     if match == "all":
+        # Tasks must have all provided tags
         q = (
             q.group_by(models.Task.id)
             .having(func.count(func.distinct(models.TaskTag.tag_id)) == len(tag_id_strs))
         )
-    else:  # 'any'
+    else:
+        # match == "any" — DB-agnostic approach (avoid DISTINCT ON)
         q = q.group_by(models.Task.id)
 
     q = q.order_by(models.Task.created_at.desc())

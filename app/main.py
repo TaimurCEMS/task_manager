@@ -1,3 +1,4 @@
+# File: /app/main.py | Version: 1.6 | Path: /app/main.py
 from fastapi import FastAPI, Depends
 from app.routers import auth, core_entities, task, tags, watchers
 from app.security import get_current_user

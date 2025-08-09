@@ -1,4 +1,4 @@
-# File: /app/routers/tags.py | Version: 1.4 | Path: /app/routers/tags.py
+# File: /app/routers/tags.py | Version: 1.5 | Path: /app/routers/tags.py
 from typing import List, Literal
 from uuid import UUID
 
@@ -25,12 +25,14 @@ def create_tag(
     db: Session = Depends(get_db),
     current_user=Depends(get_me),
 ):
+    # permissions: Member+ of workspace can create/list tags
     require_role(
         db,
         user_id=str(current_user.id),
         workspace_id=str(workspace_id),
         minimum=Role.MEMBER,
     )
+    # ensure workspace exists (404 vs silent create)
     ws = crud_core.get_workspace(db, workspace_id)
     if not ws:
         raise HTTPException(status_code=404, detail="Workspace not found")
@@ -49,6 +51,7 @@ def list_workspace_tags(
     if role is None:
         raise HTTPException(status_code=403, detail="No access to this workspace")
     return crud_tags.get_workspace_tags(db, workspace_id=workspace_id)
+
 
 # ---------- Task ↔ tag (single) ----------
 
@@ -76,6 +79,7 @@ def assign_tag(
     db: Session = Depends(get_db),
     current_user=Depends(get_me),
 ):
+    # task/workspace membership
     task = crud_task.get_task(db, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -88,6 +92,7 @@ def assign_tag(
         minimum=Role.MEMBER,
     )
 
+    # tag exists and matches same workspace
     tag = crud_tags.get_tag(db, tag_id=tag_id)
     if not tag:
         raise HTTPException(status_code=404, detail="Tag not found")
@@ -125,6 +130,7 @@ def unassign_tag(
 
     crud_tags.unassign_tag_from_task(db, task_id=task_id, tag_id=tag_id)
     return {"detail": "Tag unassigned"}
+
 
 # ---------- Task ↔ tag (bulk) ----------
 
@@ -185,6 +191,7 @@ def bulk_unassign_tags(
     n = crud_tags.unassign_tags_from_task(db, task_id=task_id, tag_ids=body.tag_ids)
     return {"unassigned": n}
 
+
 # ---------- Filters ----------
 
 @router.get("/tags/{tag_id}/tasks", response_model=List[task_schema.TaskOut])
@@ -197,6 +204,7 @@ def list_tasks_for_tag(
     if not tag:
         raise HTTPException(status_code=404, detail="Tag not found")
 
+    # membership in the tag's workspace
     role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=tag.workspace_id)
     if role is None:
         raise HTTPException(status_code=403, detail="No access to this workspace")
