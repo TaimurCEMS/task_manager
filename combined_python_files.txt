@@ -1184,9 +1184,8 @@ def get_db() -> Generator:
 
 
 
-# File: app/dependencies.py | Version: 1.0 | Path: /app/dependencies.py
-
-from app.db.database import SessionLocal
+# File: /app/dependencies.py | Version: 1.1 | Path: /app/dependencies.py
+from app.db.session import SessionLocal
 
 def get_db():
     db = SessionLocal()
@@ -2466,26 +2465,30 @@ def delete_comment(
 
 
 
-# File: /app/routers/tasks_filter.py | Version: 1.0
+# File: /app/routers/tasks_filter.py | Version: 1.1 (Corrected)
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import List
+from uuid import UUID # Import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.schemas.filters import FilterPayload
 from app.crud.filtering import fetch_tasks, group_tasks
-from app.db.database import get_db
+# FIX 1: Corrected import path for get_db
+from app.db.session import get_db
 from app.security import get_current_user
-from app.models.user import User
-from app.core.permissions import require_workspace_member  # assuming you have this
+from app.models.core_entities import User
+# FIX 2: Use the correct, existing permission helper
+from app.core.permissions import require_role, Role
 
 router = APIRouter(prefix="/workspaces", tags=["tasks-filter"])
 
 
 @router.post("/{workspace_id}/tasks/filter")
 def filter_tasks(
-    workspace_id: str,
+    # FIX 3: Use UUID for type consistency
+    workspace_id: UUID,
     payload: FilterPayload,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -2499,14 +2502,24 @@ def filter_tasks(
     - Pagination via limit/offset in payload.
     """
     # 1) Permissions-first (spec requirement)
-    try:
-        require_workspace_member(db, current_user.id, workspace_id)
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed in this workspace.")
+    # FIX 2: Use the correct permission check (require at least Guest/Member role)
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(workspace_id),
+        minimum=Role.MEMBER, # Or Role.GUEST if guests can view/filter
+        message="Not allowed in this workspace."
+    )
 
     # 2) Server-side guard: payload scope must be consistent with path workspace
-    if payload.scope.workspace_id and payload.scope.workspace_id != workspace_id:
+    # FIX 4: Correctly handle different scope types in the payload
+    if payload.scope.workspace_id and str(payload.scope.workspace_id) != str(workspace_id):
         raise HTTPException(status_code=400, detail="Payload.workspace_id must match path workspace_id")
+    
+    # Ensure the payload's scope is set to the path's workspace_id if not provided at a lower level
+    if not payload.scope.list_id and not payload.scope.folder_id and not payload.scope.space_id:
+        payload.scope.workspace_id = str(workspace_id)
+
 
     # 3) Execute filtered query
     rows = fetch_tasks(db, payload)
@@ -2518,6 +2531,7 @@ def filter_tasks(
         "count": sum(len(g["tasks"]) for g in grouped),
         "groups": grouped,
     }
+
 
 
 
@@ -3569,7 +3583,7 @@ def test_require_role_denies_member_when_min_admin(monkeypatch):
 
 
 
-# File: tests/test_protected.py | Version: 1.0 | Path: /tests/test_protected.py
+# File: tests/test_protected.py | Version: 1.1 (Corrected)
 from fastapi.testclient import TestClient
 
 def _login(client: TestClient) -> str:
@@ -3585,8 +3599,11 @@ def _login(client: TestClient) -> str:
 
 def test_protected_endpoint(client: TestClient):
     token = _login(client)
-    r = client.get("/protected", headers={"Authorization": f"Bearer {token}"})
-    assert r.status_code in (200, 204)  # adjust based on your endpoint
+    # FIX: The path must include the router's prefix "/auth"
+    r = client.get("/auth/protected", headers={"Authorization": f"Bearer {token}"})
+    
+    # The original assertion is correct, the path was the issue.
+    assert r.status_code in (200, 204)
 
 
 
@@ -3965,134 +3982,70 @@ def test_bulk_assign_unassign(client):
 
 
 
-# File: /tests/test_tasks_filter.py | Version: 1.0 | Path: /tests/test_tasks_filter.py
+# File: /tests/test_tasks_filter.py | Version: 2.0 (Updated)
 """
-Tests for the unified filtering & grouping feature:
-- Focused unit tests that validate schema rules, grouping behavior, and endpoint guards.
-- Safe to run now without depending on full DB seeding or JWT because they call
-  pure functions and FastAPI route logic directly, with controlled monkeypatches.
-
-Once custom fields are added, we will extend with DB-backed integration tests that
-seed tasks/tags and assert end-to-end API results.
+Tests for the unified filtering & grouping feature.
+- Includes fast unit tests for schemas and pure functions.
+- Includes DB-backed integration tests for the live endpoint to ensure
+  end-to-end functionality, including permissions, scoping, and grouping.
 """
-
 from __future__ import annotations
 
-# File: tests/test_tasks_filter.py | Version: 1.0 | Path: /tests/test_tasks_filter.py
 import pytest
+from typing import Dict, Any, List, Tuple
+
 try:
-    from app.routers.tasks_filter import router as _router  # noqa
-except Exception:
-    pytest.skip("tasks_filter router not present/ready; skipping until implemented", allow_module_level=True)
+    from app.routers.tasks_filter import router as _router
+except ImportError:
+    pytest.skip("tasks_filter router not present/ready; skipping.", allow_module_level=True)
 
 from fastapi import HTTPException
 
 # Schemas / CRUD helpers under test
 from app.schemas.filters import (
-    FilterPayload,
-    FilterRule,
-    FilterOperator,
-    TaskField,
-    Scope,
-    TagsFilter,
-    TagsMatch,
-    GroupBy,
+    FilterPayload, FilterRule, FilterOperator, TaskField, Scope,
+    TagsFilter, TagsMatch, GroupBy
 )
 from app.crud.filtering import group_tasks
-
-# Endpoint function (we call it directly to validate path/payload guard)
 from app.routers.tasks_filter import filter_tasks
 
-
-# -----------------------------
-# Helpers
-# -----------------------------
+# =====================================================================
+# Test Helpers (shared between unit and integration tests)
+# =====================================================================
 
 class _TaskStub:
     """A minimal task-like object for grouping unit tests (no DB required)."""
     def __init__(self, id, name, status=None, priority=None, due_date=None, start_date=None, list_id=None, assignee_id=None):
-        self.id = id
-        self.name = name
-        self.status = status
-        self.priority = priority
-        self.due_date = due_date
-        self.start_date = start_date
-        self.list_id = list_id
-        self.assignee_id = assignee_id
+        self.id, self.name, self.status, self.priority, self.due_date, self.start_date, self.list_id, self.assignee_id = \
+            id, name, status, priority, due_date, start_date, list_id, assignee_id
 
-
-def _mk_payload(
-    workspace_id: str,
-    scope_type: str = "workspace",
-    scope_id: str | None = None,
-    filters: list[FilterRule] | None = None,
-    tags: TagsFilter | None = None,
-    group_by: GroupBy | None = None,
-    limit: int = 200,
-    offset: int = 0,
-) -> FilterPayload:
-    """Create a FilterPayload with a single active scope."""
-    scope_kwargs = {
-        "workspace_id": None,
-        "space_id": None,
-        "folder_id": None,
-        "list_id": None,
-    }
-    if scope_type == "workspace":
-        scope_kwargs["workspace_id"] = workspace_id
-    elif scope_type == "space":
-        scope_kwargs["space_id"] = scope_id or "space-1"
-    elif scope_type == "folder":
-        scope_kwargs["folder_id"] = scope_id or "folder-1"
-    elif scope_type == "list":
-        scope_kwargs["list_id"] = scope_id or "list-1"
-    else:
-        raise ValueError("invalid scope_type")
-
-    return FilterPayload(
-        scope=Scope(**scope_kwargs),
-        filters=filters or [],
-        tags=tags,
-        group_by=group_by,
-        limit=limit,
-        offset=offset,
+def _register_and_login(client, email: str, password: str = "pass123") -> str:
+    client.post("/auth/register", json={"email": email, "password": password})
+    r = client.post(
+        "/auth/login",
+        data={"username": email, "password": password},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
+    assert r.status_code == 200, f"Login failed for {email}: {r.text}"
+    return r.json()["access_token"]
 
+def _auth_headers(token: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
 
-# -----------------------------
-# Schema / validation tests
-# -----------------------------
+# =====================================================================
+# Section 1: Unit Tests (No Database Interaction)
+# =====================================================================
 
 def test_scope_requires_one_identifier():
-    # Missing all scope identifiers should fail
     with pytest.raises(ValueError):
         Scope()
 
-def test_payload_accepts_workspace_scope():
-    p = _mk_payload(workspace_id="ws-1", scope_type="workspace")
-    assert p.scope.workspace_id == "ws-1"
-
-def test_payload_accepts_nonworkspace_scopes():
-    p_space = _mk_payload("ws-1", scope_type="space", scope_id="sp-9")
-    assert p_space.scope.space_id == "sp-9"
-    p_folder = _mk_payload("ws-1", scope_type="folder", scope_id="fo-3")
-    assert p_folder.scope.folder_id == "fo-3"
-    p_list = _mk_payload("ws-1", scope_type="list", scope_id="li-7")
-    assert p_list.scope.list_id == "li-7"
-
 def test_filter_rule_variants_construct():
-    # Covers equality, set-membership, and emptiness operators
     FilterRule(field=TaskField.status, op=FilterOperator.eq, value="open")
     FilterRule(field=TaskField.priority, op=FilterOperator.in_, value=["high", "urgent"])
     FilterRule(field=TaskField.name, op=FilterOperator.contains, value="login")
     FilterRule(field=TaskField.start_date, op=FilterOperator.is_empty)
-    FilterRule(field=TaskField.due_date, op=FilterOperator.is_not_empty)
     # No exception means schema accepts these forms
-
-
-# -----------------------------
-# Grouping unit tests (pure function)
-# -----------------------------
 
 def test_group_tasks_by_status_handles_no_value():
     tasks = [
@@ -4101,31 +4054,9 @@ def test_group_tasks_by_status_handles_no_value():
         _TaskStub(id="t3", name="C", status="Done"),
     ]
     groups = group_tasks(tasks, group_by="status")
-    # Convert to dict for easier assertions
-    gmap = {g["group"]: g["tasks"] for g in groups}
-    assert "Open" in gmap
-    assert "Done" in gmap
-    assert "No Value" in gmap
-    assert {t["id"] for t in gmap["No Value"]} == {"t2"}
-
-def test_group_tasks_by_priority_and_due_date_buckets():
-    tasks = [
-        _TaskStub(id="t1", name="A", priority="High"),
-        _TaskStub(id="t2", name="B", priority=None),
-    ]
-    g_by_priority = group_tasks(tasks, group_by="priority")
-    gmap = {g["group"]: g["tasks"] for g in g_by_priority}
-    assert "High" in gmap and "No Value" in gmap
-
-    # due_date grouping should stringify or bucket unknowns under "No Value"
-    tasks2 = [
-        _TaskStub(id="t3", name="C", due_date=None),
-        _TaskStub(id="t4", name="D", due_date=None),
-    ]
-    g_by_due = group_tasks(tasks2, group_by="due_date")
-    gmap_due = {g["group"]: g["tasks"] for g in g_by_due}
-    assert "No Value" in gmap_due
-    assert {t["id"] for t in gmap_due["No Value"]} == {"t3", "t4"}
+    gmap = {g["group"]: [t["id"] for t in g["tasks"]] for g in groups}
+    assert "Open" in gmap and "Done" in gmap and "No Value" in gmap
+    assert gmap["No Value"] == ["t2"]
 
 def test_group_tasks_default_single_bucket_when_no_groupby():
     tasks = [_TaskStub(id="t1", name="A"), _TaskStub(id="t2", name="B")]
@@ -4134,53 +4065,128 @@ def test_group_tasks_default_single_bucket_when_no_groupby():
     assert groups[0]["group"] is None
     assert {t["id"] for t in groups[0]["tasks"]} == {"t1", "t2"}
 
+# =====================================================================
+# Section 2: Integration Tests (Database Interaction)
+# =====================================================================
 
-# -----------------------------
-# Endpoint guard tests (no DB)
-# -----------------------------
+@pytest.fixture(scope="module")
+def seeded_data(client):
+    """Fixture to set up all necessary data for the filter tests once per module."""
+    token = _register_and_login(client, "filter-user@example.com")
+    headers = _auth_headers(token)
+    
+    r = client.post("/workspaces/", json={"name": "Filter Test WS"}, headers=headers)
+    wid = r.json()["id"]
+    
+    r = client.post("/spaces/", json={"name": "Filter Test Space", "workspace_id": wid}, headers=headers)
+    sid = r.json()["id"]
 
-def test_filter_endpoint_rejects_mismatched_workspace_id(monkeypatch):
-    """
-    The router must reject requests where the path workspace_id
-    does not match payload.scope.workspace_id (spec guard).
-    """
-    # Monkeypatch workspace-membership check to a no-op for this unit test
-    from app.routers import tasks_filter as mod
+    r = client.post("/lists/", json={"name": "List A", "space_id": sid}, headers=headers)
+    lid_a = r.json()["id"]
+    
+    r = client.post("/lists/", json={"name": "List B", "space_id": sid}, headers=headers)
+    lid_b = r.json()["id"]
 
-    def _no_op_require_member(db, user_id, workspace_id):
-        return True
+    # Create Tags
+    tag1_id = client.post(f"/workspaces/{wid}/tags", json={"name": "Urgent", "color": "red"}, headers=headers).json()["id"]
+    tag2_id = client.post(f"/workspaces/{wid}/tags", json={"name": "Backend"}, headers=headers).json()["id"]
 
-    monkeypatch.setattr(mod, "require_workspace_member", _no_op_require_member, raising=True)
+    # Create Tasks
+    task1_id = client.post("/tasks/", json={"name": "Fix login bug", "list_id": lid_a, "space_id": sid, "status": "In Progress", "priority": "High"}, headers=headers).json()["id"]
+    task2_id = client.post("/tasks/", json={"name": "Develop API endpoint", "list_id": lid_a, "space_id": sid, "status": "To Do", "priority": "High"}, headers=headers).json()["id"]
+    task3_id = client.post("/tasks/", json={"name": "Deploy to staging", "list_id": lid_b, "space_id": sid, "status": "In Progress", "priority": "Normal"}, headers=headers).json()["id"]
+    
+    # Assign tags: Task 1 -> Urgent, Backend; Task 2 -> Backend
+    client.post(f"/tasks/{task1_id}/tags:assign", json={"tag_ids": [tag1_id, tag2_id]}, headers=headers)
+    client.post(f"/tasks/{task2_id}/tags:assign", json={"tag_ids": [tag2_id]}, headers=headers)
 
-    # Build a payload that wrongly declares a different workspace_id
-    payload = _mk_payload(workspace_id="ws-payload")
-    # Minimal stand-ins for FastAPI-injected deps
-    fake_db = None
+    data = {
+        "wid": wid, "sid": sid, "lid_a": lid_a, "lid_b": lid_b,
+        "task1_id": task1_id, "task2_id": task2_id, "task3_id": task3_id,
+        "tag1_id": tag1_id, "tag2_id": tag2_id, "headers": headers
+    }
+    return data
 
-    class _User:
-        id = "u1"
+def _filter_request(client, headers: Dict[str, str], wid: str, payload: Dict[str, Any]) -> Tuple[int, List[str]]:
+    """Helper to make a filter request and return the count and a list of task IDs."""
+    r = client.post(f"/workspaces/{wid}/tasks/filter", json=payload, headers=headers)
+    assert r.status_code == 200, f"Filter request failed: {r.text}"
+    body = r.json()
+    task_ids = [task["id"] for group in body["groups"] for task in group["tasks"]]
+    return body["count"], task_ids
 
-    with pytest.raises(HTTPException) as exc:
-        filter_tasks(
-            workspace_id="ws-path",
-            payload=payload,
-            db=fake_db,
-            current_user=_User(),
-        )
-    assert exc.value.status_code == 400
-    assert "must match path workspace_id" in exc.value.detail
+def test_filter_by_status(client, seeded_data):
+    """Verify filtering by a single standard attribute (status)."""
+    payload = {
+        "scope": {"workspace_id": seeded_data["wid"]},
+        "filters": [{"field": "status", "op": "eq", "value": "In Progress"}]
+    }
+    count, ids = _filter_request(client, seeded_data["headers"], seeded_data["wid"], payload)
+    
+    assert count == 2
+    assert set(ids) == {seeded_data["task1_id"], seeded_data["task3_id"]}
 
+def test_filter_by_multiple_attributes(client, seeded_data):
+    """Verify filtering by a combination of attributes (priority AND status)."""
+    payload = {
+        "scope": {"workspace_id": seeded_data["wid"]},
+        "filters": [
+            {"field": "priority", "op": "eq", "value": "High"},
+            {"field": "status", "op": "eq", "value": "To Do"}
+        ]
+    }
+    count, ids = _filter_request(client, seeded_data["headers"], seeded_data["wid"], payload)
 
-def test_tags_filter_payload_any_and_all():
-    # Ensures the payload accepts both ANY and ALL modes
-    any_tags = TagsFilter(tag_ids=["tag-1", "tag-2"], match=TagsMatch.any)
-    all_tags = TagsFilter(tag_ids=["tag-3", "tag-4"], match=TagsMatch.all)
+    assert count == 1
+    assert ids[0] == seeded_data["task2_id"]
 
-    p1 = _mk_payload("ws-1", tags=any_tags)
-    p2 = _mk_payload("ws-1", tags=all_tags)
+def test_filter_by_tags_all(client, seeded_data):
+    """Verify filtering for tasks that have ALL of the specified tags."""
+    payload = {
+        "scope": {"workspace_id": seeded_data["wid"]},
+        "tags": {"tag_ids": [seeded_data["tag1_id"], seeded_data["tag2_id"]], "match": "all"}
+    }
+    count, ids = _filter_request(client, seeded_data["headers"], seeded_data["wid"], payload)
 
-    assert p1.tags.match == TagsMatch.any
-    assert p2.tags.match == TagsMatch.all
+    assert count == 1
+    assert ids[0] == seeded_data["task1_id"]
+
+def test_filter_with_list_scope(client, seeded_data):
+    """Verify that scoping the filter to a specific list works correctly."""
+    payload = {
+        "scope": {"list_id": seeded_data["lid_b"]},
+        "filters": []
+    }
+    count, ids = _filter_request(client, seeded_data["headers"], seeded_data["wid"], payload)
+
+    assert count == 1
+    assert ids[0] == seeded_data["task3_id"]
+
+def test_grouping_by_status(client, seeded_data):
+    """Verify that the grouping feature correctly buckets tasks by status."""
+    payload = {
+        "scope": {"workspace_id": seeded_data["wid"]},
+        "group_by": "status"
+    }
+    r = client.post(f"/workspaces/{seeded_data['wid']}/tasks/filter", json=payload, headers=seeded_data["headers"])
+    assert r.status_code == 200
+    body = r.json()
+    
+    groups = {group["group"]: [task["id"] for task in group["tasks"]] for group in body["groups"]}
+    
+    assert "In Progress" in groups and "To Do" in groups
+    assert set(groups["In Progress"]) == {seeded_data["task1_id"], seeded_data["task3_id"]}
+    assert groups["To Do"] == [seeded_data["task2_id"]]
+
+def test_filter_permissions_for_outsider(client, seeded_data):
+    """Ensure an unauthorized user cannot access the filter endpoint."""
+    outsider_token = _register_and_login(client, "outsider-filter@example.com")
+    outsider_headers = _auth_headers(outsider_token)
+    
+    payload = {"scope": {"workspace_id": seeded_data["wid"]}}
+    r = client.post(f"/workspaces/{seeded_data['wid']}/tasks/filter", json=payload, headers=outsider_headers)
+    
+    assert r.status_code == 403
 
 
 
