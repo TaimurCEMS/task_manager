@@ -1,8 +1,8 @@
-# File: /app/routers/tags.py | Version: 1.0 | Path: /app/routers/tags.py
-from typing import List
+# File: /app/routers/tags.py | Version: 1.4 | Path: /app/routers/tags.py
+from typing import List, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.crud import core_entities as crud_core
@@ -25,14 +25,12 @@ def create_tag(
     db: Session = Depends(get_db),
     current_user=Depends(get_me),
 ):
-    # permissions: Member+ of workspace can create/list tags
     require_role(
         db,
         user_id=str(current_user.id),
         workspace_id=str(workspace_id),
         minimum=Role.MEMBER,
     )
-    # ensure workspace exists (404 vs silent create)
     ws = crud_core.get_workspace(db, workspace_id)
     if not ws:
         raise HTTPException(status_code=404, detail="Workspace not found")
@@ -52,7 +50,7 @@ def list_workspace_tags(
         raise HTTPException(status_code=403, detail="No access to this workspace")
     return crud_tags.get_workspace_tags(db, workspace_id=workspace_id)
 
-# ---------- Task ↔ tag ----------
+# ---------- Task ↔ tag (single) ----------
 
 @router.get("/tasks/{task_id}/tags", response_model=List[tag_schema.TagOut])
 def list_task_tags(
@@ -78,7 +76,6 @@ def assign_tag(
     db: Session = Depends(get_db),
     current_user=Depends(get_me),
 ):
-    # task/workspace membership
     task = crud_task.get_task(db, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -91,7 +88,6 @@ def assign_tag(
         minimum=Role.MEMBER,
     )
 
-    # tag exists and matches same workspace
     tag = crud_tags.get_tag(db, tag_id=tag_id)
     if not tag:
         raise HTTPException(status_code=404, detail="Tag not found")
@@ -130,7 +126,66 @@ def unassign_tag(
     crud_tags.unassign_tag_from_task(db, task_id=task_id, tag_id=tag_id)
     return {"detail": "Tag unassigned"}
 
-# ---------- Filter by tag ----------
+# ---------- Task ↔ tag (bulk) ----------
+
+@router.post("/tasks/{task_id}/tags:assign", response_model=tag_schema.BulkAssignResult)
+def bulk_assign_tags(
+    task_id: UUID,
+    body: tag_schema.TagIdsIn,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    parent_list = crud_core.get_list(db, task.list_id)
+    space = crud_core.get_space(db, parent_list.space_id)
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
+
+    tags = crud_tags.get_tags_by_ids(db, tag_ids=body.tag_ids)
+    if len(tags) != len(body.tag_ids):
+        raise HTTPException(status_code=404, detail="Tag not found")
+    if any(t.workspace_id != str(space.workspace_id) for t in tags):
+        raise HTTPException(status_code=400, detail="Tag workspace mismatch with task")
+
+    n = crud_tags.assign_tags_to_task(db, task_id=task_id, tag_ids=body.tag_ids)
+    return {"assigned": n}
+
+
+@router.post("/tasks/{task_id}/tags:unassign", response_model=tag_schema.BulkUnassignResult)
+def bulk_unassign_tags(
+    task_id: UUID,
+    body: tag_schema.TagIdsIn,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    parent_list = crud_core.get_list(db, task.list_id)
+    space = crud_core.get_space(db, parent_list.space_id)
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
+
+    tags = crud_tags.get_tags_by_ids(db, tag_ids=body.tag_ids)
+    if len(tags) != len(body.tag_ids):
+        raise HTTPException(status_code=404, detail="Tag not found")
+    if any(t.workspace_id != str(space.workspace_id) for t in tags):
+        raise HTTPException(status_code=400, detail="Tag workspace mismatch with task")
+
+    n = crud_tags.unassign_tags_from_task(db, task_id=task_id, tag_ids=body.tag_ids)
+    return {"unassigned": n}
+
+# ---------- Filters ----------
 
 @router.get("/tags/{tag_id}/tasks", response_model=List[task_schema.TaskOut])
 def list_tasks_for_tag(
@@ -142,9 +197,32 @@ def list_tasks_for_tag(
     if not tag:
         raise HTTPException(status_code=404, detail="Tag not found")
 
-    # membership in the tag's workspace
     role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=tag.workspace_id)
     if role is None:
         raise HTTPException(status_code=403, detail="No access to this workspace")
 
     return crud_tags.get_tasks_for_tag(db, tag_id=tag_id)
+
+
+@router.get("/workspaces/{workspace_id}/tasks/by-tags", response_model=List[task_schema.TaskOut])
+def list_tasks_by_tags(
+    workspace_id: UUID,
+    tag_ids: List[UUID] = Query(..., description="Repeat ?tag_ids=... for multiple tags"),
+    match: Literal["any", "all"] = Query("any"),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(workspace_id))
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this workspace")
+
+    return crud_tags.get_tasks_by_tags(
+        db,
+        workspace_id=workspace_id,
+        tag_ids=tag_ids,
+        match=match,
+        limit=limit,
+        offset=offset,
+    )

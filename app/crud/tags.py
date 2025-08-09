@@ -1,9 +1,10 @@
+# File: /app/crud/tags.py | Version: 1.3 | Path: /app/crud/tags.py
 from __future__ import annotations
 
 from typing import List, Optional
 from uuid import UUID
 
-from sqlalchemy import func
+from sqlalchemy import func, delete
 from sqlalchemy.orm import Session
 
 from app.models import core_entities as models
@@ -29,6 +30,13 @@ def get_workspace_tags(db: Session, *, workspace_id: UUID) -> List[models.Tag]:
 
 def get_tag(db: Session, *, tag_id: UUID | str) -> Optional[models.Tag]:
     return db.get(models.Tag, str(tag_id))
+
+
+def get_tags_by_ids(db: Session, *, tag_ids: List[UUID]) -> List[models.Tag]:
+    if not tag_ids:
+        return []
+    ids = [str(t) for t in tag_ids]
+    return list(db.query(models.Tag).filter(models.Tag.id.in_(ids)).all())
 
 
 # -------- Task ↔ Tag assignment --------
@@ -76,6 +84,44 @@ def unassign_tag_from_task(db: Session, *, task_id: UUID, tag_id: UUID) -> bool:
     return True
 
 
+def assign_tags_to_task(db: Session, *, task_id: UUID, tag_ids: List[UUID]) -> int:
+    """Bulk-assign; returns number of new links created."""
+    if not tag_ids:
+        return 0
+    ids = [str(t) for t in tag_ids]
+
+    existing_ids = {
+        row.tag_id
+        for row in db.query(models.TaskTag).filter(
+            models.TaskTag.task_id == str(task_id),
+            models.TaskTag.tag_id.in_(ids),
+        )
+    }
+    to_create = [tid for tid in ids if tid not in existing_ids]
+    if not to_create:
+        return 0
+
+    links = [models.TaskTag(task_id=str(task_id), tag_id=tid) for tid in to_create]
+    db.add_all(links)
+    db.commit()
+    return len(links)
+
+
+def unassign_tags_from_task(db: Session, *, task_id: UUID, tag_ids: List[UUID]) -> int:
+    """Bulk-unassign; returns number of links removed."""
+    if not tag_ids:
+        return 0
+    ids = [str(t) for t in tag_ids]
+    stmt = (
+        delete(models.TaskTag)
+        .where(models.TaskTag.task_id == str(task_id))
+        .where(models.TaskTag.tag_id.in_(ids))
+    )
+    result = db.execute(stmt)
+    db.commit()
+    return result.rowcount or 0
+
+
 def get_tasks_for_tag(db: Session, *, tag_id: UUID) -> List[models.Task]:
     return (
         db.query(models.Task)
@@ -97,11 +143,6 @@ def get_tasks_by_tags(
     limit: Optional[int] = None,
     offset: Optional[int] = None,
 ) -> List[models.Task]:
-    """
-    Return tasks in a workspace that match multiple tags.
-    match='any' -> task has at least one of the tags
-    match='all' -> task has all of the tags
-    """
     if not tag_ids:
         return []
 
@@ -121,7 +162,7 @@ def get_tasks_by_tags(
             q.group_by(models.Task.id)
             .having(func.count(func.distinct(models.TaskTag.tag_id)) == len(tag_id_strs))
         )
-    else:  # 'any' (DB-agnostic; avoid DISTINCT ON)
+    else:  # 'any'
         q = q.group_by(models.Task.id)
 
     q = q.order_by(models.Task.created_at.desc())

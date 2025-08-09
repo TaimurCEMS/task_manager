@@ -1,16 +1,22 @@
-﻿# Byte-compiled / cache
+﻿# Python
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Virtual envs
 .venv/
 venv/
 env/
+.build/
+dist/
+*.egg-info/
+
+# Tests & tooling
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+coverage.xml
 
 # Editors/OS
 .vscode/
@@ -18,25 +24,18 @@ env/
 .DS_Store
 Thumbs.db
 
-# Local data & builds
-*.db
-*.sqlite*
-*.sqlite3
-*.log
-dist/
-build/
-
-# FastAPI/UVicorn artifacts (if any)
-*.pid
-
-# Environment & secrets
+# Env & logs
 .env
-.env.*.local
-.env.local
+.env.*
+*.log
+logs/
 
-# Node bits (if you add a frontend later)
+# SQLite & temp DBs
+*.sqlite3
+*.db
+test.db
+
+# Node (future frontend)
 node_modules/
-
-# Local helpers
-debug_metadata.py
-tree_all.txt
+pnpm-lock.yaml
+yarn.lock
