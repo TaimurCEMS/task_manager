@@ -1,4 +1,4 @@
-# File: /app/routers/task.py | Version: 1.6 | Path: /app/routers/task.py
+# File: /app/routers/task.py | Version: 1.7 | Path: /app/routers/task.py
 from typing import List
 from uuid import UUID
 
@@ -7,8 +7,10 @@ from sqlalchemy.orm import Session
 
 from app.crud import core_entities as crud_core
 from app.crud import task as crud_task
+from app.crud import comments as crud_comments
 from app.db.session import get_db
 from app.schemas import task as schema
+from app.schemas import comments as comment_schema
 from app.routers.auth_dependencies import get_me
 from app.core.permissions import Role, require_role, get_workspace_role
 
@@ -243,8 +245,6 @@ def list_subtasks(
     return crud_task.get_subtasks(db, task_id)
 
 
-# ----- MOVE SUBTASK (NEW) -----
-
 @router.post("/tasks/{task_id}/move", response_model=schema.TaskOut)
 def move_subtask(
     task_id: UUID,
@@ -284,9 +284,75 @@ def move_subtask(
         if not new_parent:
             raise HTTPException(status_code=404, detail="New parent task not found")
 
-    # Execute the move (ValueError => bad request e.g., cycle or different list)
+    # Execute the move
     try:
         moved = crud_task.move_subtask(db, task_id, new_parent_uuid)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return moved
+
+
+# ----- COMMENTS (NEW) -----
+
+@router.post("/tasks/{task_id}/comments", response_model=comment_schema.CommentOut)
+def create_comment(
+    task_id: UUID,
+    body: comment_schema.CommentCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    """
+    Create a comment on a task (Member+ required in the task's workspace).
+    """
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    parent_list = crud_core.get_list(db, task.list_id)
+    if not parent_list:
+        raise HTTPException(status_code=404, detail="List not found")
+    space = crud_core.get_space(db, parent_list.space_id)
+    if not space:
+        raise HTTPException(status_code=404, detail="Space not found")
+
+    # Permission: Member+ in workspace
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
+
+    created = crud_comments.create_comment(
+        db, task_id=task_id, user_id=str(current_user.id), body=body.body
+    )
+    return created
+
+
+@router.get("/tasks/{task_id}/comments", response_model=List[comment_schema.CommentOut])
+def list_comments(
+    task_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_me),
+):
+    task = crud_task.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    parent_list = crud_core.get_list(db, task.list_id)
+    if not parent_list:
+        raise HTTPException(status_code=404, detail="List not found")
+    space = crud_core.get_space(db, parent_list.space_id)
+    if not space:
+        raise HTTPException(status_code=404, detail="Space not found")
+
+    # View permission: any member of the workspace
+    role = get_workspace_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+    )
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this task")
+
+    return crud_comments.get_comments_for_task(db, task_id=task_id)
