@@ -1,4 +1,3 @@
-# File: /app/routers/task.py | Version: 1.10 | Path: /app/routers/task.py
 from typing import List
 from uuid import UUID
 
@@ -14,7 +13,8 @@ from app.db.session import get_db
 from app.schemas import task as schema
 from app.schemas import comments as comment_schema
 from app.routers.auth_dependencies import get_me
-from app.core.permissions import Role, require_role, get_workspace_role
+# FIX: Import has_min_role for cleaner permission checks
+from app.core.permissions import Role, require_role, get_workspace_role, has_min_role
 
 router = APIRouter(tags=["Tasks"])
 
@@ -124,7 +124,8 @@ def delete_task(
     deleted = crud_task.delete_task(db, task_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Task not found")
-    return {"detail": "Task soft-deleted"}
+    # FIX: Reflect actual hard-delete behavior
+    return {"detail": "Task deleted"}
 
 # =========================
 # DEPENDENCIES
@@ -305,7 +306,6 @@ def create_comment(
     if not space:
         raise HTTPException(status_code=404, detail="Space not found")
 
-    # Permission: Member+ in workspace
     require_role(
         db,
         user_id=str(current_user.id),
@@ -317,11 +317,9 @@ def create_comment(
         db, task_id=task_id, user_id=str(current_user.id), body=body.body
     )
 
-    # Auto-follow: commenter becomes a watcher (idempotent; swallow non-fatal errors)
     try:
         crud_watchers.follow_task(db, task_id=task_id, user_id=str(current_user.id))
     except Exception:
-        # We don't want a watcher failure to block comment creation
         pass
 
     return created
@@ -420,9 +418,11 @@ def delete_comment(
     if not comment or comment.task_id != str(task_id):
         raise HTTPException(status_code=404, detail="Comment not found")
 
-    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id))
-
-    if not (comment.user_id == str(current_user.id) or (role is not None and role >= Role.ADMIN)):
+    # FIX: Use has_min_role() for cleaner, more maintainable permission check
+    is_admin_plus = has_min_role(
+        db, user_id=str(current_user.id), workspace_id=str(space.workspace_id), minimum=Role.ADMIN
+    )
+    if not (comment.user_id == str(current_user.id) or is_admin_plus):
         raise HTTPException(status_code=403, detail="Not allowed to delete this comment")
 
     ok = crud_comments.delete_comment(db, comment_id=comment_id)
