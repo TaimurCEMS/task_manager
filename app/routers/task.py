@@ -1,4 +1,4 @@
-# File: /app/routers/task.py | Version: 1.7 | Title: Tasks, Subtasks, Comments Router (fixed auth dep)
+# File: /app/routers/task.py | Version: 1.8 | Title: Tasks, Subtasks, Comments Router (+assignees upsert)
 from __future__ import annotations
 
 from typing import List
@@ -11,6 +11,7 @@ from app.crud import core_entities as crud_core
 from app.crud import task as crud_task
 from app.crud import comments as crud_comments
 from app.crud import watchers as crud_watchers
+from app.crud.assignees import set_task_assignees
 
 from app.db.session import get_db
 from app.schemas import task as schema
@@ -32,7 +33,13 @@ def create_task(
     if not space:
         raise HTTPException(status_code=404, detail="Space not found")
     require_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id), minimum=Role.MEMBER)
-    return crud_task.create_task(db, data)
+
+    created = crud_task.create_task(db, data)
+
+    # NEW: persist assignees if provided
+    set_task_assignees(db, task_id=str(created.id), user_ids=data.assignee_ids)
+
+    return created
 
 
 @router.get("/tasks/{task_id}", response_model=schema.TaskOut)
@@ -85,7 +92,12 @@ def update_task(
         raise HTTPException(status_code=404, detail="List not found")
     space = crud_core.get_space(db, parent_list.space_id)
     require_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id), minimum=Role.MEMBER)
+
     updated = crud_task.update_task(db, task_id, data)
+
+    # NEW: if the caller provided assignee_ids (including empty list), apply them
+    set_task_assignees(db, task_id=str(updated.id), user_ids=data.assignee_ids)
+
     return updated
 
 
@@ -182,6 +194,10 @@ def create_subtask(
         parent_task_id=task_id,
     )
     created = crud_task.create_subtask(db, task_id, payload)
+
+    # NEW: persist assignees for subtask too (if provided)
+    set_task_assignees(db, task_id=str(created.id), user_ids=data.assignee_ids)
+
     return created
 
 

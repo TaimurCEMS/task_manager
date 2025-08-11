@@ -1,33 +1,29 @@
-name: CI / tests
+# File: /.github/workflows/ci.yml | Version: 1.0 | Title: CI - run tests and coverage on pushes and PRs
+name: CI
+
 on:
+  push:
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
 
 jobs:
   tests:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.12"]   # single version to match one check
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: "pip"
-      - run: python -m pip install --upgrade pip setuptools wheel
-      - run: pip install -r requirements-dev.txt || pip install -r requirements.txt
-      - run: pytest -q
-# --- add at the end of your workflow file ---
-  ci-gate:
-    name: required
-    if: always()
-    needs: [tests]        # <- depends on your test job id
-    runs-on: ubuntu-latest
-    steps:
-      - name: Fail if any needed job failed
+          python-version: '3.13'
+
+      - name: Install deps
         run: |
-          if [ "${{ needs.tests.result }}" != "success" ]; then
-            echo "Tests failed or were cancelled"; exit 1; 
-          fi
-          echo "All checks passed"
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pytest pytest-cov
+
+      - name: Run tests
+        run: |
+          pytest
