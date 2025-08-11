@@ -1,4 +1,4 @@
-# File: /.coveragerc | Version: 1.5 | Title: Coverage config (clean omit patterns)
+# File: /.coveragerc | Version: 1.6 | Title: Coverage config (re-include custom_fields.py)
 [run]
 source = app
 omit =
@@ -14,9 +14,6 @@ omit =
     app/models/list.py
     app/models/task.py
     app/dependencies.py
-    app/crud/custom_fields.py
-    **/crud/custom_fields.py
-    app\\crud\\custom_fields.py
 
 [report]
 exclude_lines =
