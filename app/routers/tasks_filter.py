@@ -1,3 +1,4 @@
+# File: /app/routers/tasks_filter.py | Version: 1.3 | Title: Tasks Filter Router (robust CF import)
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -27,17 +28,17 @@ from app.models.core_entities import (
     TaskTag,
     User,
 )
-from app.models.custom_fields import CustomFieldValue
+
+# Custom Field value can live in different modules depending on your layout
+try:
+    from app.models.custom_fields import CustomFieldValue
+except ImportError:
+    from app.models.core_entities import CustomFieldValue
 
 router = APIRouter(prefix="/workspaces", tags=["tasks-filter"])
 
-# Feature flag in case assignees are optional in your instance
 HAS_ASSIGNEES = True
 
-
-# ---------------------------
-# Query-building helpers
-# ---------------------------
 
 def _apply_scope(q, payload: FilterPayload):
     s = payload.scope
@@ -55,17 +56,12 @@ def _apply_scope(q, payload: FilterPayload):
     elif s.space_id:
         q = q.where(ListModel.space_id == s.space_id)
     else:
-        # Default to workspace scope (guards cross-workspace peeking)
         q = q.where(Space.workspace_id == s.workspace_id)
 
     return q
 
 
 def _json_value_expr():
-    """
-    Cross-dialect way to read CustomFieldValue.value['value'].
-    On SQLite: json_extract(value, '$.value')
-    """
     return func.json_extract(CustomFieldValue.value, "$.value")
 
 
@@ -74,7 +70,7 @@ def _get_single_rule_expr(rule):
     op = rule.op
     val = rule.value
 
-    # ---------- Custom Field Rules: "cf_<field_definition_id>" ----------
+    # Custom Field: key like cf_<field_definition_id>
     if isinstance(field, str) and field.startswith("cf_"):
         field_def_id = field.replace("cf_", "")
 
@@ -84,7 +80,6 @@ def _get_single_rule_expr(rule):
                 CustomFieldValue.field_definition_id == field_def_id,
             )
         )
-
         v = _json_value_expr()
 
         if op == FilterOperator.eq:
@@ -103,10 +98,9 @@ def _get_single_rule_expr(rule):
             return or_(no_row, empty_value)
         if op == FilterOperator.is_not_empty:
             return exists(base_exists.where(and_(v.is_not(None), cast(v, String) != "")))
-
         return None
 
-    # ---------- Standard Task Field Rules ----------
+    # Native Task fields
     col_map = {
         TaskField.name: Task.name,
         TaskField.status: Task.status,
@@ -164,7 +158,6 @@ def _apply_rules(q, payload: FilterPayload):
         expr = _get_single_rule_expr(r)
         if expr is not None:
             expressions.append(expr)
-
     if expressions:
         q = q.where(and_(*expressions))
     return q
@@ -175,6 +168,7 @@ def _build_filtered_query(db: Session, payload: FilterPayload):
     q = _apply_scope(q, payload)
     q = _apply_rules(q, payload)
 
+    # Tags
     if payload.tags and payload.tags.tag_ids:
         q = q.join(TaskTag, TaskTag.task_id == Task.id)
         q = q.where(TaskTag.tag_id.in_(payload.tags.tag_ids))
@@ -207,6 +201,7 @@ def _group_tasks(db: Session, rows: List[Task], group_by: Optional[str]) -> List
     if not group_by:
         return [{"group": None, "tasks": [_row_to_minimal_dict(t) for t in rows]}]
 
+    # Group by Custom Field
     if isinstance(group_by, str) and group_by.startswith("cf_"):
         field_def_id = group_by.replace("cf_", "")
         buckets: Dict[str, List[dict]] = {}
@@ -226,6 +221,7 @@ def _group_tasks(db: Session, rows: List[Task], group_by: Optional[str]) -> List
             buckets.setdefault(key, []).append(_row_to_minimal_dict(t))
         return [{"group": k, "tasks": v} for k, v in buckets.items()]
 
+    # Group by native fields
     buckets: Dict[str, List[dict]] = {}
     for t in rows:
         if group_by == "status":
@@ -241,10 +237,6 @@ def _group_tasks(db: Session, rows: List[Task], group_by: Optional[str]) -> List
         buckets.setdefault(str(key), []).append(_row_to_minimal_dict(t))
     return [{"group": k, "tasks": v} for k, v in buckets.items()]
 
-
-# ---------------------------
-# Router endpoint
-# ---------------------------
 
 @router.post("/{workspace_id}/tasks/filter")
 def filter_tasks(
@@ -263,7 +255,7 @@ def filter_tasks(
 
     if payload.scope.workspace_id and str(payload.scope.workspace_id) != str(workspace_id):
         raise HTTPException(status_code=400, detail="Workspace scope mismatch.")
-    
+
     if not any([payload.scope.list_id, payload.scope.folder_id, payload.scope.space_id]):
         payload.scope.workspace_id = str(workspace_id)
 

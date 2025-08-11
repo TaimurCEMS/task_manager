@@ -1,8 +1,9 @@
+# File: /app/schemas/filters.py | Version: 1.2 | Title: Filters & Grouping Schemas
 from __future__ import annotations
 from enum import Enum
 from typing import List, Optional, Union, Any
-# FIX: Import model_validator for whole-model validation
 from pydantic import BaseModel, Field, model_validator
+
 
 class FilterOperator(str, Enum):
     eq = "eq"
@@ -17,6 +18,7 @@ class FilterOperator(str, Enum):
     is_empty = "is_empty"
     is_not_empty = "is_not_empty"
 
+
 class TaskField(str, Enum):
     name = "name"
     status = "status"
@@ -26,18 +28,22 @@ class TaskField(str, Enum):
     assignee_id = "assignee_id"
     tag_ids = "tag_ids"
 
+
 class FilterRule(BaseModel):
     field: Union[TaskField, str]
     op: FilterOperator
     value: Optional[Union[str, int, float, List[Any]]] = None
 
+
 class TagsMatch(str, Enum):
     any = "any"
     all = "all"
 
+
 class TagsFilter(BaseModel):
     tag_ids: List[str] = Field(default_factory=list)
     match: TagsMatch = TagsMatch.any
+
 
 class Scope(BaseModel):
     list_id: Optional[str] = None
@@ -45,14 +51,12 @@ class Scope(BaseModel):
     space_id: Optional[str] = None
     workspace_id: Optional[str] = None
 
-    # FIX: Use a model_validator to check the state of the entire model.
-    # This is the correct Pydantic V2 approach for this type of validation.
-    @model_validator(mode='after')
-    def at_least_one_scope(self) -> 'Scope':
-        # After the model is built, check if at least one of the fields has a value.
+    @model_validator(mode="after")
+    def at_least_one_scope(self) -> "Scope":
         if not any([self.list_id, self.folder_id, self.space_id, self.workspace_id]):
             raise ValueError("Provide one scope: workspace_id, space_id, folder_id, or list_id")
         return self
+
 
 class GroupBy(str, Enum):
     status = "status"
@@ -60,6 +64,7 @@ class GroupBy(str, Enum):
     priority = "priority"
     due_date = "due_date"
     tag_ids = "tag_ids"
+
 
 class FilterPayload(BaseModel):
     scope: Scope

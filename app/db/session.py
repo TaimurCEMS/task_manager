@@ -1,14 +1,16 @@
-# File: app/db/session.py | Version: 1.0 | Path: /app/db/session.py
-import os
+# File: /app/db/session.py | Version: 1.1 | Title: SQLAlchemy Session using Central Settings
 from typing import Generator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
-connect_args = {"check_same_thread": False} if SQLALCHEMY_DATABASE_URL.startswith("sqlite") else {}
+from app.core.config import settings
 
+SQLALCHEMY_DATABASE_URL = settings.DATABASE_URL
+
+connect_args = {"check_same_thread": False} if SQLALCHEMY_DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
 
 def get_db() -> Generator:
     db = SessionLocal()

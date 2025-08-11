@@ -1,4 +1,4 @@
-# File: /app/routers/__init__.py | Version: 1.3 | Path: /app/routers/__init__.py
-from . import auth, core_entities, task, tags, watchers
-
-__all__ = ["auth", "core_entities", "task", "tags", "watchers"]
+# File: /app/routers/__init__.py | Version: 1.0 | Title: Routers Package (minimal, no side-imports)
+# Keep this minimal to avoid ImportError on missing optional routers.
+# Routers are imported explicitly in app.main.
+__all__ = []

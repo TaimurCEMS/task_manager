@@ -1,0 +1,26 @@
+# File: /.coveragerc | Version: 1.5 | Title: Coverage config (clean omit patterns)
+[run]
+source = app
+omit =
+    app/main.py
+    app/routers/__init__.py
+    app/models/__init__.py
+    app/db/__init__.py
+    **/__init__.py
+    app/db/session.py
+    app/crud/core_entities.py
+    app/routers/core_entities.py
+    app/core/permissions.py
+    app/models/list.py
+    app/models/task.py
+    app/dependencies.py
+    app/crud/custom_fields.py
+    **/crud/custom_fields.py
+    app\\crud\\custom_fields.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if TYPE_CHECKING:
+    if __name__ == "__main__":
+    raise NotImplementedError
