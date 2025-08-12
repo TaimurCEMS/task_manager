@@ -1,10 +1,19 @@
-fastapi>=0.110
-uvicorn[standard]>=0.23
-pydantic>=2,<3
-sqlalchemy>=2.0.0
-python-jose[cryptography]>=3.3
-passlib[bcrypt]>=1.7
-python-multipart>=0.0.6
-email-validator>=2.0
-pytest>=7
-httpx>=0.24
+# app runtime
+fastapi==0.116.1          # newer FastAPI allows patched Starlette
+pydantic==2.11.4
+pydantic-settings==2.5.2
+SQLAlchemy==2.0.32
+alembic==1.13.2
+uvicorn==0.30.1
+passlib==1.7.4
+bcrypt==4.1.3
+
+# auth/crypto
+python-jose[cryptography]==3.4.0
+ecdsa==0.19.1  # keep for now; 0.19.2 not available yet
+
+# http
+httpx==0.27.0
+
+# observability
+sentry-sdk==2.8.0

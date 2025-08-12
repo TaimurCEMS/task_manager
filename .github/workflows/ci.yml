@@ -1,33 +1,54 @@
-name: CI / tests
+# File: .github/workflows/ci.yml | Version: 1.2 | Title: CI â€” lint, tests, coverage, security
+name: CI
+
 on:
+  push:
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
 
 jobs:
-  tests:
+  test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.12"]   # single version to match one check
+    timeout-minutes: 25
+    env:
+      PYTHONWARNINGS: default
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: "pip"
-      - run: python -m pip install --upgrade pip setuptools wheel
-      - run: pip install -r requirements-dev.txt || pip install -r requirements.txt
-      - run: pytest -q
-# --- add at the end of your workflow file ---
-  ci-gate:
-    name: required
-    if: always()
-    needs: [tests]        # <- depends on your test job id
-    runs-on: ubuntu-latest
-    steps:
-      - name: Fail if any needed job failed
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install deps
         run: |
-          if [ "${{ needs.tests.result }}" != "success" ]; then
-            echo "Tests failed or were cancelled"; exit 1; 
-          fi
-          echo "All checks passed"
+          python -m pip install --upgrade pip setuptools wheel
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+  - name: Lint
+    run: |
+      python -m pip install --upgrade pip
+      python -m pip install ruff==0.12.8
+      ruff --version
+      ruff format --check .
+      ruff check .
+      - name: Run tests
+        env:
+          DATABASE_URL: "sqlite:///./app.db"
+          SECRET_KEY: "ci-secret"
+        run: |
+          pytest --maxfail=1 --cov=app --cov-report=term-missing --cov-fail-under=85
+
+      - name: Security audit (pip-audit)
+        continue-on-error: true
+        run: |
+          set -e
+          pip-audit -r requirements.txt || echo "::warning::pip-audit found issues (non-blocking in CI)"
+
+      - name: Static analysis (bandit)
+        run: bandit -q -r app -c .bandit

@@ -1,13 +1,12 @@
 # File: /tests/test_subtasks.py | Version: 1.0 | Path: /tests/test_subtasks.py
-from uuid import UUID
 from typing import Dict
+from uuid import UUID
 
 import pytest
-
 from sqlalchemy.orm import Session
 
 from app.crud import task as crud_task
-from app.models.core_entities import WorkspaceMember, User  # type: ignore
+from app.models.core_entities import User, WorkspaceMember  # type: ignore
 
 
 def _auth_headers(token: str) -> Dict[str, str]:
@@ -87,8 +86,8 @@ def test_create_and_list_subtasks(client):
             "description": "child",
             "status": "to_do",
             "priority": "Normal",
-            "list_id": lst["id"],   # will be overridden to parent list (same value)
-            "space_id": space["id"] # required by schema; router rebuilds payload
+            "list_id": lst["id"],  # will be overridden to parent list (same value)
+            "space_id": space["id"],  # required by schema; router rebuilds payload
         },
         headers=_auth_headers(token),
     )
@@ -126,8 +125,16 @@ def test_create_subtask_requires_membership(client, db_session: Session):
     assert r.status_code == 403, r.text
 
     # Add User2 as Member, retry -> 200
-    user2 = db_session.query(User).filter(User.email == "outsider+guard@example.com").first()
-    db_session.add(WorkspaceMember(workspace_id=workspace_id, user_id=user2.id, role="Member", is_active=True))
+    user2 = (
+        db_session.query(User)
+        .filter(User.email == "outsider+guard@example.com")
+        .first()
+    )
+    db_session.add(
+        WorkspaceMember(
+            workspace_id=workspace_id, user_id=user2.id, role="Member", is_active=True
+        )
+    )
     db_session.commit()
 
     r = client.post(
@@ -162,4 +169,6 @@ def test_move_subtask_cycle_prevention(client, db_session: Session):
 
     # Try to move parent under child -> should raise ValueError (cycle)
     with pytest.raises(ValueError):
-        crud_task.move_subtask(db_session, child_task_id=parent_id, new_parent_task_id=child_id)
+        crud_task.move_subtask(
+            db_session, child_task_id=parent_id, new_parent_task_id=child_id
+        )

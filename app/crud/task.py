@@ -9,10 +9,10 @@ from sqlalchemy.orm import Session
 from app.models import core_entities as models
 from app.schemas import task as schema
 
-
 # ---------------------------
 # Core Task CRUD
 # ---------------------------
+
 
 def create_task(db: Session, data: schema.TaskCreate) -> models.Task:
     """
@@ -49,7 +49,9 @@ def get_tasks_by_list(db: Session, list_id: UUID) -> List[models.Task]:
     return db.query(models.Task).filter_by(list_id=str(list_id)).all()
 
 
-def update_task(db: Session, task_id: UUID, data: schema.TaskUpdate) -> Optional[models.Task]:
+def update_task(
+    db: Session, task_id: UUID, data: schema.TaskUpdate
+) -> Optional[models.Task]:
     task = get_task(db, task_id)
     if not task:
         return None
@@ -78,11 +80,14 @@ def delete_task(db: Session, task_id: UUID) -> bool:
 # Subtasks helpers (Sprint 2)
 # ---------------------------
 
+
 def get_subtasks(db: Session, parent_task_id: UUID) -> List[models.Task]:
     return db.query(models.Task).filter_by(parent_task_id=str(parent_task_id)).all()
 
 
-def create_subtask(db: Session, parent_task_id: UUID, data: schema.TaskCreate) -> models.Task:
+def create_subtask(
+    db: Session, parent_task_id: UUID, data: schema.TaskCreate
+) -> models.Task:
     """
     Convenience wrapper to create a subtask under a given parent.
     Uses the provided TaskCreate (must include list_id and name).
@@ -101,7 +106,9 @@ def create_subtask(db: Session, parent_task_id: UUID, data: schema.TaskCreate) -
     return create_task(db, payload)
 
 
-def _would_create_cycle(db: Session, child_id: str, new_parent_id: Optional[str]) -> bool:
+def _would_create_cycle(
+    db: Session, child_id: str, new_parent_id: Optional[str]
+) -> bool:
     """
     Returns True if moving 'child_id' under 'new_parent_id' would create a cycle.
     Walks up the parent chain of new_parent_id.
@@ -119,7 +126,9 @@ def _would_create_cycle(db: Session, child_id: str, new_parent_id: Optional[str]
     return False
 
 
-def move_subtask(db: Session, child_task_id: UUID, new_parent_task_id: Optional[UUID]) -> Optional[models.Task]:
+def move_subtask(
+    db: Session, child_task_id: UUID, new_parent_task_id: Optional[UUID]
+) -> Optional[models.Task]:
     """
     Re-hang a task under a new parent (or detach by passing None).
     Prevents cycles. Requires same list (simple rule for now).
@@ -128,7 +137,9 @@ def move_subtask(db: Session, child_task_id: UUID, new_parent_task_id: Optional[
     if not child:
         return None
 
-    new_parent_id_str: Optional[str] = str(new_parent_task_id) if new_parent_task_id else None
+    new_parent_id_str: Optional[str] = (
+        str(new_parent_task_id) if new_parent_task_id else None
+    )
 
     # If detaching
     if new_parent_id_str is None:
@@ -160,7 +171,10 @@ def move_subtask(db: Session, child_task_id: UUID, new_parent_task_id: Optional[
 # Dependencies (placeholder)
 # ---------------------------
 
-def create_dependency(db: Session, data: schema.TaskDependencyCreate) -> schema.TaskDependencyOut:
+
+def create_dependency(
+    db: Session, data: schema.TaskDependencyCreate
+) -> schema.TaskDependencyOut:
     # Return a synthesized dependency object (no DB storage yet)
     return schema.TaskDependencyOut(
         id=uuid4(),
@@ -169,6 +183,8 @@ def create_dependency(db: Session, data: schema.TaskDependencyCreate) -> schema.
     )
 
 
-def get_dependencies_for_task(db: Session, task_id: UUID) -> List[schema.TaskDependencyOut]:
+def get_dependencies_for_task(
+    db: Session, task_id: UUID
+) -> List[schema.TaskDependencyOut]:
     # No persistence yet; return empty list
     return []

@@ -4,15 +4,17 @@ from __future__ import annotations
 from typing import List, Optional
 from uuid import UUID
 
-from sqlalchemy import func, delete
+from sqlalchemy import delete, func
 from sqlalchemy.orm import Session
 
 from app.models import core_entities as models
 
-
 # -------- Tags (workspace-scoped) --------
 
-def create_tag(db: Session, *, workspace_id: UUID, name: str, color: Optional[str]) -> models.Tag:
+
+def create_tag(
+    db: Session, *, workspace_id: UUID, name: str, color: Optional[str]
+) -> models.Tag:
     tag = models.Tag(workspace_id=str(workspace_id), name=name, color=color)
     db.add(tag)
     db.commit()
@@ -41,6 +43,7 @@ def get_tags_by_ids(db: Session, *, tag_ids: List[UUID]) -> List[models.Tag]:
 
 
 # -------- Task ↔ Tag assignment --------
+
 
 def get_tags_for_task(db: Session, *, task_id: UUID) -> List[models.Tag]:
     return (
@@ -135,6 +138,7 @@ def get_tasks_for_tag(db: Session, *, tag_id: UUID) -> List[models.Task]:
 
 # -------- Multi-tag filtering (workspace-scoped) --------
 
+
 def get_tasks_by_tags(
     db: Session,
     *,
@@ -165,9 +169,8 @@ def get_tasks_by_tags(
 
     if match == "all":
         # Tasks must have all provided tags
-        q = (
-            q.group_by(models.Task.id)
-            .having(func.count(func.distinct(models.TaskTag.tag_id)) == len(tag_id_strs))
+        q = q.group_by(models.Task.id).having(
+            func.count(func.distinct(models.TaskTag.tag_id)) == len(tag_id_strs)
         )
     else:
         # match == "any" — DB-agnostic approach (avoid DISTINCT ON)

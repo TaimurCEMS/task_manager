@@ -1,8 +1,5 @@
 # File: /tests/test_move_subtask_api.py | Version: 1.1 | Path: /tests/test_move_subtask_api.py
 from typing import Dict
-from uuid import UUID
-
-import pytest
 
 
 def _auth_headers(token: str) -> Dict[str, str]:

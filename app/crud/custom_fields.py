@@ -1,53 +1,113 @@
-# File: app/crud/custom_fields.py | Version: 1.0 | Path: app/crud/custom_fields.py
+# File: /app/crud/custom_fields.py | Version: 1.1 | Title: Custom Fields CRUD (robust imports)
 from __future__ import annotations
-from typing import List, Optional, Any
+
+from typing import Any, List, Optional
 from uuid import UUID
+
 from sqlalchemy.orm import Session
 
-from app.models.custom_fields import CustomFieldDefinition, ListCustomField, CustomFieldValue
-from app.schemas.custom_fields import CustomFieldDefinitionCreate
+# Try modern split-module layout first, then fallback to monolith core_entities
+try:
+    from app.models.custom_fields import (
+        CustomFieldDefinition,
+        CustomFieldValue,
+        ListCustomField,
+    )
+except ImportError:  # fallback if your project keeps them in core_entities
+    from app.models.core_entities import (
+        CustomFieldDefinition,
+        CustomFieldValue,
+        ListCustomField,
+    )
 
-# ---- Definition CRUD ----
 
-def create_definition(db: Session, *, workspace_id: UUID, data: CustomFieldDefinitionCreate) -> CustomFieldDefinition:
-    definition = CustomFieldDefinition(
+# ---- Definitions ----
+
+
+def create_definition(
+    db: Session,
+    *,
+    workspace_id: UUID | str,
+    data,
+) -> CustomFieldDefinition:
+    """
+    data: schemas.custom_fields.CustomFieldDefinitionCreate
+    """
+    obj = CustomFieldDefinition(
         workspace_id=str(workspace_id),
         name=data.name,
         field_type=data.field_type,
-        options=data.options
+        options=data.options or None,
     )
-    db.add(definition)
+    db.add(obj)
     db.commit()
-    db.refresh(definition)
-    return definition
+    db.refresh(obj)
+    return obj
 
-def get_definitions_for_workspace(db: Session, *, workspace_id: UUID) -> List[CustomFieldDefinition]:
-    return db.query(CustomFieldDefinition).filter(CustomFieldDefinition.workspace_id == str(workspace_id)).all()
 
-# ---- Enablement CRUD ----
+def get_definitions_for_workspace(
+    db: Session, *, workspace_id: UUID | str
+) -> List[CustomFieldDefinition]:
+    return (
+        db.query(CustomFieldDefinition)
+        .filter(CustomFieldDefinition.workspace_id == str(workspace_id))
+        .order_by(CustomFieldDefinition.name.asc())
+        .all()
+    )
 
-def enable_field_on_list(db: Session, *, list_id: UUID, field_id: UUID) -> ListCustomField:
-    link = ListCustomField(list_id=str(list_id), field_definition_id=str(field_id))
-    db.add(link)
+
+# ---- Enable on List ----
+
+
+def enable_field_on_list(
+    db: Session, *, list_id: UUID | str, field_id: UUID | str
+) -> ListCustomField:
+    existing = (
+        db.query(ListCustomField)
+        .filter(
+            ListCustomField.list_id == str(list_id),
+            ListCustomField.field_definition_id == str(field_id),
+        )
+        .first()
+    )
+    if existing:
+        return existing
+    rel = ListCustomField(list_id=str(list_id), field_definition_id=str(field_id))
+    db.add(rel)
     db.commit()
-    db.refresh(link)
-    return link
+    db.refresh(rel)
+    return rel
 
-def get_enabled_fields_for_list(db: Session, *, list_id: UUID) -> List[CustomFieldDefinition]:
-    return db.query(CustomFieldDefinition).join(ListCustomField).filter(ListCustomField.list_id == str(list_id)).all()
 
-# ---- Value CRUD ----
+# ---- Task Value (Upsert) ----
 
-def set_value_for_task(db: Session, *, task_id: UUID, field_id: UUID, value: Optional[Any]) -> CustomFieldValue:
-    # Use merge for simplicity (upsert)
-    value_obj = CustomFieldValue(
+
+def set_value_for_task(
+    db: Session, *, task_id: UUID | str, field_id: UUID | str, value: Any
+) -> CustomFieldValue:
+    """
+    Values are stored as JSON: {"value": <raw>} so they can be typed/fetched consistently.
+    """
+    row: Optional[CustomFieldValue] = (
+        db.query(CustomFieldValue)
+        .filter(
+            CustomFieldValue.task_id == str(task_id),
+            CustomFieldValue.field_definition_id == str(field_id),
+        )
+        .first()
+    )
+    if row:
+        row.value = {"value": value}
+        db.commit()
+        db.refresh(row)
+        return row
+
+    row = CustomFieldValue(
         task_id=str(task_id),
         field_definition_id=str(field_id),
-        value={"value": value} # Store value in a JSON object for consistency
+        value={"value": value},
     )
-    merged_obj = db.merge(value_obj)
+    db.add(row)
     db.commit()
-    return merged_obj
-
-def get_values_for_task(db: Session, *, task_id: UUID) -> List[CustomFieldValue]:
-    return db.query(CustomFieldValue).filter(CustomFieldValue.task_id == str(task_id)).all()
+    db.refresh(row)
+    return row

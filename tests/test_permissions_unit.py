@@ -3,11 +3,7 @@ import pytest
 from fastapi import HTTPException
 
 # Import the permission helpers we just added
-from app.core.permissions import (
-    Role,
-    has_min_role,
-    require_role,
-)
+from app.core.permissions import Role, has_min_role, require_role
 
 # We will monkeypatch app.core.permissions.get_workspace_role
 # so these tests don't depend on DB models or fixtures.
@@ -19,10 +15,14 @@ def test_has_min_role_true_when_admin_meets_member(monkeypatch):
         return Role.ADMIN
 
     import app.core.permissions as perms
+
     monkeypatch.setattr(perms, "get_workspace_role", fake_get_workspace_role)
 
     # Act + Assert
-    assert has_min_role(db=None, user_id="U1", workspace_id="W1", minimum=Role.MEMBER) is True
+    assert (
+        has_min_role(db=None, user_id="U1", workspace_id="W1", minimum=Role.MEMBER)
+        is True
+    )
 
 
 def test_has_min_role_false_when_guest_does_not_meet_member(monkeypatch):
@@ -30,9 +30,13 @@ def test_has_min_role_false_when_guest_does_not_meet_member(monkeypatch):
         return Role.GUEST
 
     import app.core.permissions as perms
+
     monkeypatch.setattr(perms, "get_workspace_role", fake_get_workspace_role)
 
-    assert has_min_role(db=None, user_id="U1", workspace_id="W1", minimum=Role.MEMBER) is False
+    assert (
+        has_min_role(db=None, user_id="U1", workspace_id="W1", minimum=Role.MEMBER)
+        is False
+    )
 
 
 def test_require_role_allows_owner_when_min_admin(monkeypatch):
@@ -40,9 +44,12 @@ def test_require_role_allows_owner_when_min_admin(monkeypatch):
         return Role.OWNER
 
     import app.core.permissions as perms
+
     monkeypatch.setattr(perms, "get_workspace_role", fake_get_workspace_role)
 
-    resolved = require_role(db=None, user_id="U1", workspace_id="W1", minimum=Role.ADMIN)
+    resolved = require_role(
+        db=None, user_id="U1", workspace_id="W1", minimum=Role.ADMIN
+    )
     assert resolved is Role.OWNER
 
 
@@ -52,6 +59,7 @@ def test_require_role_denies_non_member(monkeypatch):
         return None
 
     import app.core.permissions as perms
+
     monkeypatch.setattr(perms, "get_workspace_role", fake_get_workspace_role)
 
     with pytest.raises(HTTPException) as excinfo:
@@ -68,6 +76,7 @@ def test_require_role_denies_member_when_min_admin(monkeypatch):
         return Role.MEMBER
 
     import app.core.permissions as perms
+
     monkeypatch.setattr(perms, "get_workspace_role", fake_get_workspace_role)
 
     with pytest.raises(HTTPException) as excinfo:

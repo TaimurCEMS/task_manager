@@ -1,0 +1,13 @@
+---
+# File: .bandit | Version: 1.1 | Title: Bandit configuration (YAML; doc-start first line)
+# IMPORTANT: Bandit’s YAML parser can require '---' as the very first line.
+# Keep this header on line 2+ to avoid the “expected '<document start>'” error.
+exclude_dirs:
+  - tests
+  - .venv
+  - .git
+  - .github
+skips:
+  - B101   # assert used in tests / simple guards
+  - B608   # hardcoded SQL strings (SQLAlchemy ORM mitigates)
+  - B603   # subprocess without shell (not used, but avoid false positives)

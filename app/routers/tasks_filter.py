@@ -1,51 +1,57 @@
+# File: /app/routers/tasks_filter.py | Version: 2.6 | Title: Tasks Filter Router (sort+order + correct tags ANY/ALL)
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import and_, or_, not_, func, select, exists, cast, String
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import String, and_, cast, exists, func, not_, or_, select
 from sqlalchemy.orm import Session
 
+from app.core.permissions import Role, require_role
 from app.db.session import get_db
-from app.security import get_current_user
-from app.core.permissions import require_role, Role
+from app.models.core_entities import List as ListModel
+from app.models.core_entities import Space, Task, TaskAssignee, TaskTag, User, Workspace
 from app.schemas.filters import (
-    FilterPayload,
     FilterOperator,
-    TaskField,
-    TagsMatch,
+    FilterPayload,
     GroupBy,
+    TagsMatch,
+    TaskField,
 )
-from app.models.core_entities import (
-    Task,
-    List as ListModel,
-    Space,
-    Workspace,
-    TaskAssignee,
-    Tag,
-    TaskTag,
-    User,
-)
-from app.models.custom_fields import CustomFieldValue
+from app.security import get_current_user
+
+# Custom Field value may live in different module names depending on layout
+try:
+    from app.models.custom_fields import CustomFieldValue
+except ImportError:  # pragma: no cover
+    from app.models.core_entities import CustomFieldValue  # type: ignore
 
 router = APIRouter(prefix="/workspaces", tags=["tasks-filter"])
 
-# Feature flag in case assignees are optional in your instance
+# feature flag (spelled correctly 🙂)
 HAS_ASSIGNEES = True
 
+# sortable columns
+_SORT_MAP = {
+    "created_at": Task.created_at,
+    "due_date": Task.due_date,
+    "priority": Task.priority,
+    "name": Task.name,
+    "status": Task.status,
+}
 
-# ---------------------------
-# Query-building helpers
-# ---------------------------
 
+# ----------------------
+# Scope & rule helpers
+# ----------------------
 def _apply_scope(q, payload: FilterPayload):
     s = payload.scope
 
     q = (
         q.join(ListModel, ListModel.id == Task.list_id)
-         .join(Space, Space.id == ListModel.space_id)
-         .join(Workspace, Workspace.id == Space.workspace_id)
+        .join(Space, Space.id == ListModel.space_id)
+        .join(Workspace, Workspace.id == Space.workspace_id)
     )
 
     if s.list_id:
@@ -55,17 +61,13 @@ def _apply_scope(q, payload: FilterPayload):
     elif s.space_id:
         q = q.where(ListModel.space_id == s.space_id)
     else:
-        # Default to workspace scope (guards cross-workspace peeking)
         q = q.where(Space.workspace_id == s.workspace_id)
 
     return q
 
 
 def _json_value_expr():
-    """
-    Cross-dialect way to read CustomFieldValue.value['value'].
-    On SQLite: json_extract(value, '$.value')
-    """
+    # JSON shape assumed {"value": <actual>}
     return func.json_extract(CustomFieldValue.value, "$.value")
 
 
@@ -74,39 +76,51 @@ def _get_single_rule_expr(rule):
     op = rule.op
     val = rule.value
 
-    # ---------- Custom Field Rules: "cf_<field_definition_id>" ----------
+    # ----- Custom Field: key like cf_<definition_id>
     if isinstance(field, str) and field.startswith("cf_"):
         field_def_id = field.replace("cf_", "")
 
-        base_exists = select(1).where(
-            and_(
-                CustomFieldValue.task_id == Task.id,
-                CustomFieldValue.field_definition_id == field_def_id,
-            )
+        base = and_(
+            CustomFieldValue.task_id == Task.id,
+            CustomFieldValue.field_definition_id == field_def_id,
         )
-
         v = _json_value_expr()
 
         if op == FilterOperator.eq:
-            return exists(base_exists.where(cast(v, String) == str(val)))
+            return exists(select(1).where(and_(base, cast(v, String) == str(val))))
         if op == FilterOperator.ne:
-            return exists(base_exists.where(cast(v, String) != str(val)))
+            return exists(select(1).where(and_(base, cast(v, String) != str(val))))
         if op == FilterOperator.contains:
-            return exists(base_exists.where(func.lower(cast(v, String)).contains(str(val).lower())))
+            return exists(
+                select(1).where(
+                    and_(base, func.lower(cast(v, String)).contains(str(val).lower()))
+                )
+            )
         if op == FilterOperator.in_:
-            return exists(base_exists.where(cast(v, String).in_([str(x) for x in (val or [])])))
+            return exists(
+                select(1).where(
+                    and_(base, cast(v, String).in_([str(x) for x in (val or [])]))
+                )
+            )
         if op == FilterOperator.not_in:
-            return exists(base_exists.where(not_(cast(v, String).in_([str(x) for x in (val or [])]))))
+            return exists(
+                select(1).where(
+                    and_(base, not_(cast(v, String).in_([str(x) for x in (val or [])])))
+                )
+            )
         if op == FilterOperator.is_empty:
-            no_row = not_(exists(base_exists))
-            empty_value = exists(base_exists.where(or_(v.is_(None), cast(v, String) == "")))
+            no_row = not_(exists(select(1).where(base)))
+            empty_value = exists(
+                select(1).where(and_(base, or_(v.is_(None), cast(v, String) == "")))
+            )
             return or_(no_row, empty_value)
         if op == FilterOperator.is_not_empty:
-            return exists(base_exists.where(and_(v.is_not(None), cast(v, String) != "")))
-
+            return exists(
+                select(1).where(and_(base, v.is_not(None), cast(v, String) != ""))
+            )
         return None
 
-    # ---------- Standard Task Field Rules ----------
+    # ----- Native Task fields
     col_map = {
         TaskField.name: Task.name,
         TaskField.status: Task.status,
@@ -114,18 +128,19 @@ def _get_single_rule_expr(rule):
         TaskField.due_date: Task.due_date,
     }
 
+    # Assignee rules
     if field == TaskField.assignee_id and HAS_ASSIGNEES:
-        exists_q = select(TaskAssignee.id).where(TaskAssignee.task_id == Task.id)
+        ex = select(TaskAssignee.id).where(TaskAssignee.task_id == Task.id)
         if op == FilterOperator.is_empty:
-            return not_(exists(exists_q))
+            return not_(exists(ex))
         if op == FilterOperator.is_not_empty:
-            return exists(exists_q)
+            return exists(ex)
         if op == FilterOperator.eq:
-            return exists(exists_q.where(TaskAssignee.user_id == val))
+            return exists(ex.where(TaskAssignee.user_id == val))
         if op == FilterOperator.in_:
-            return exists(exists_q.where(TaskAssignee.user_id.in_(val or [])))
+            return exists(ex.where(TaskAssignee.user_id.in_(val or [])))
         if op == FilterOperator.not_in:
-            return not_(exists(exists_q.where(TaskAssignee.user_id.in_(val or []))))
+            return not_(exists(ex.where(TaskAssignee.user_id.in_(val or []))))
         return None
 
     col = col_map.get(field)
@@ -159,31 +174,79 @@ def _get_single_rule_expr(rule):
 
 
 def _apply_rules(q, payload: FilterPayload):
-    expressions = []
+    exprs = []
     for r in payload.filters:
-        expr = _get_single_rule_expr(r)
-        if expr is not None:
-            expressions.append(expr)
-
-    if expressions:
-        q = q.where(and_(*expressions))
+        e = _get_single_rule_expr(r)
+        if e is not None:
+            exprs.append(e)
+    if exprs:
+        q = q.where(and_(*exprs))
     return q
 
 
-def _build_filtered_query(db: Session, payload: FilterPayload):
+def _apply_sort(q, sort: Optional[str], order: str):
+    if not sort:
+        return q.order_by(Task.created_at.desc())
+    col = _SORT_MAP.get(str(sort))
+    if not col:
+        return q.order_by(Task.created_at.desc())
+    return q.order_by(col.desc() if str(order).lower() == "desc" else col.asc())
+
+
+# -----------------------------
+# NEW: tags ANY/ALL block
+# -----------------------------
+def _apply_tags_block(q, payload: FilterPayload):
+    """
+    Supports payload:
+      {"tags": {"tag_ids": [<uuid>, ...], "match": "any"|"all"}}
+    """
+    tags_block = getattr(payload, "tags", None)
+    if not tags_block:
+        return q
+
+    # payload.tags may be a dict or a Pydantic object
+    if isinstance(tags_block, dict):
+        tag_ids = tags_block.get("tag_ids") or tags_block.get("ids") or []
+        match = (tags_block.get("match") or "any").lower()
+    else:
+        tag_ids = (
+            getattr(tags_block, "tag_ids", None) or getattr(tags_block, "ids", []) or []
+        )
+        m = getattr(tags_block, "match", "any")
+        match = m.value if isinstance(m, TagsMatch) else str(m).lower()
+
+    tag_ids = [str(t) for t in (tag_ids or [])]
+    if not tag_ids:
+        return q
+
+    if match == "all":
+        # tasks that have *all* tag_ids
+        sub = (
+            select(TaskTag.task_id)
+            .where(TaskTag.tag_id.in_(tag_ids))
+            .group_by(TaskTag.task_id)
+            .having(func.count(func.distinct(TaskTag.tag_id)) == len(tag_ids))
+        )
+        return q.where(Task.id.in_(sub))
+    else:
+        # ANY (default)
+        sub = select(TaskTag.task_id).where(TaskTag.tag_id.in_(tag_ids))
+        return q.where(Task.id.in_(sub))
+
+
+# -----------------------------
+# Query + response shaping
+# -----------------------------
+def _build_filtered_query(
+    db: Session, payload: FilterPayload, sort: Optional[str], order: str
+):
     q = select(Task).distinct()
     q = _apply_scope(q, payload)
     q = _apply_rules(q, payload)
-
-    if payload.tags and payload.tags.tag_ids:
-        q = q.join(TaskTag, TaskTag.task_id == Task.id)
-        q = q.where(TaskTag.tag_id.in_(payload.tags.tag_ids))
-        if payload.tags.match == TagsMatch.all:
-            q = q.group_by(Task.id).having(
-                func.count(TaskTag.tag_id.distinct()) == len(payload.tags.tag_ids)
-            )
-
-    q = q.order_by(Task.created_at.desc()).offset(payload.offset).limit(payload.limit)
+    q = _apply_tags_block(q, payload)  # <- NEW
+    q = _apply_sort(q, sort, order)
+    q = q.offset(payload.offset).limit(payload.limit)
     return q
 
 
@@ -198,8 +261,10 @@ def _row_to_minimal_dict(t: Task) -> Dict[str, Any]:
     }
 
 
-def _fetch_tasks(db: Session, payload: FilterPayload) -> List[Task]:
-    rows = db.execute(_build_filtered_query(db, payload))
+def _fetch_tasks(
+    db: Session, payload: FilterPayload, sort: Optional[str], order: str
+) -> List[Task]:
+    rows = db.execute(_build_filtered_query(db, payload, sort, order))
     return list(rows.scalars().all())
 
 
@@ -207,6 +272,7 @@ def _group_tasks(db: Session, rows: List[Task], group_by: Optional[str]) -> List
     if not group_by:
         return [{"group": None, "tasks": [_row_to_minimal_dict(t) for t in rows]}]
 
+    # Group by Custom Field
     if isinstance(group_by, str) and group_by.startswith("cf_"):
         field_def_id = group_by.replace("cf_", "")
         buckets: Dict[str, List[dict]] = {}
@@ -226,6 +292,7 @@ def _group_tasks(db: Session, rows: List[Task], group_by: Optional[str]) -> List
             buckets.setdefault(key, []).append(_row_to_minimal_dict(t))
         return [{"group": k, "tasks": v} for k, v in buckets.items()]
 
+    # Group by native fields
     buckets: Dict[str, List[dict]] = {}
     for t in rows:
         if group_by == "status":
@@ -242,17 +309,21 @@ def _group_tasks(db: Session, rows: List[Task], group_by: Optional[str]) -> List
     return [{"group": k, "tasks": v} for k, v in buckets.items()]
 
 
-# ---------------------------
-# Router endpoint
-# ---------------------------
-
+# -----------------------------
+# Endpoint
+# -----------------------------
 @router.post("/{workspace_id}/tasks/filter")
 def filter_tasks(
     workspace_id: UUID,
     payload: FilterPayload,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    sort: Optional[str] = Query(
+        None, pattern="^(created_at|due_date|priority|name|status)$"
+    ),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
 ):
+    # guard: requester must be a member of this workspace
     require_role(
         db,
         user_id=str(current_user.id),
@@ -261,14 +332,24 @@ def filter_tasks(
         message="Not allowed in this workspace.",
     )
 
-    if payload.scope.workspace_id and str(payload.scope.workspace_id) != str(workspace_id):
+    # enforce workspace scope alignment
+    if payload.scope.workspace_id and str(payload.scope.workspace_id) != str(
+        workspace_id
+    ):
         raise HTTPException(status_code=400, detail="Workspace scope mismatch.")
-    
-    if not any([payload.scope.list_id, payload.scope.folder_id, payload.scope.space_id]):
+
+    # if no narrower scope provided, apply workspace scope
+    if not any(
+        [payload.scope.list_id, payload.scope.folder_id, payload.scope.space_id]
+    ):
         payload.scope.workspace_id = str(workspace_id)
 
-    rows = _fetch_tasks(db, payload)
-    gb = payload.group_by.value if isinstance(payload.group_by, GroupBy) else payload.group_by
+    rows = _fetch_tasks(db, payload, sort, order)
+    gb = (
+        payload.group_by.value
+        if isinstance(payload.group_by, GroupBy)
+        else payload.group_by
+    )
     grouped = _group_tasks(db, rows, gb)
 
     return {

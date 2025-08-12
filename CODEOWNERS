@@ -1,0 +1,6 @@
+# File: CODEOWNERS | Version: 1.0 | Title: Repository code owners
+# Set your real owners/teams here
+*       @your-org/owners
+app/    @your-org/backend
+ui/     @your-org/frontend
+tests/  @your-org/qa
