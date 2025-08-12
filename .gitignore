@@ -39,3 +39,5 @@ test.db
 node_modules/
 pnpm-lock.yaml
 yarn.lock
+
+*.bak
