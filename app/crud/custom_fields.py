@@ -10,18 +10,19 @@ from sqlalchemy.orm import Session
 try:
     from app.models.custom_fields import (
         CustomFieldDefinition,
-        ListCustomField,
         CustomFieldValue,
+        ListCustomField,
     )
 except ImportError:  # fallback if your project keeps them in core_entities
     from app.models.core_entities import (
         CustomFieldDefinition,
-        ListCustomField,
         CustomFieldValue,
+        ListCustomField,
     )
 
 
 # ---- Definitions ----
+
 
 def create_definition(
     db: Session,
@@ -57,6 +58,7 @@ def get_definitions_for_workspace(
 
 # ---- Enable on List ----
 
+
 def enable_field_on_list(
     db: Session, *, list_id: UUID | str, field_id: UUID | str
 ) -> ListCustomField:
@@ -78,6 +80,7 @@ def enable_field_on_list(
 
 
 # ---- Task Value (Upsert) ----
+
 
 def set_value_for_task(
     db: Session, *, task_id: UUID | str, field_id: UUID | str, value: Any

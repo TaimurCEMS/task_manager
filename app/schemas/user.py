@@ -1,8 +1,7 @@
 # File: /app/schemas/user.py | Version: 2.0 | Path: /app/schemas/user.py
 from __future__ import annotations
 
-from pydantic import BaseModel, EmailStr
-from pydantic import ConfigDict
+from pydantic import BaseModel, ConfigDict, EmailStr
 
 
 class UserCreate(BaseModel):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Iterable, Optional
+
 from sqlalchemy.orm import Session
 
 from app.models.core_entities import TaskAssignee

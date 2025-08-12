@@ -2,9 +2,11 @@
 from sqlalchemy import inspect
 from sqlalchemy.engine import Engine
 
+
 def _idx_names(engine: Engine, table_name: str) -> set[str]:
     insp = inspect(engine)
     return {i["name"] for i in insp.get_indexes(table_name)}
+
 
 def test_expected_indexes_exist(db_session):
     engine = db_session.get_bind()

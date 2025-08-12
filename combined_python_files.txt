@@ -1743,7 +1743,7 @@ def set_custom_field_value(
     task = crud_task.get_task(db, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    
+
     parent_list = crud_core.get_list(db, task.list_id)
     space = crud_core.get_space(db, parent_list.space_id)
     require_role(db, user_id=current_user.id, workspace_id=space.workspace_id, minimum=Role.MEMBER)
@@ -2696,7 +2696,7 @@ def filter_tasks(
 
     if payload.scope.workspace_id and str(payload.scope.workspace_id) != str(workspace_id):
         raise HTTPException(status_code=400, detail="Workspace scope mismatch.")
-    
+
     if not any([payload.scope.list_id, payload.scope.folder_id, payload.scope.space_id]):
         payload.scope.workspace_id = str(workspace_id)
 
@@ -3557,10 +3557,10 @@ def seeded_data(client):
     """
     token = _register_and_login(client, "cf-admin@example.com")
     headers = _auth_headers(token)
-    
+
     r = client.post("/workspaces/", json={"name": "CF Test WS"}, headers=headers)
     wid = r.json()["id"]
-    
+
     r = client.post("/spaces/", json={"name": "CF Space", "workspace_id": wid}, headers=headers)
     sid = r.json()["id"]
 
@@ -3573,7 +3573,7 @@ def seeded_data(client):
     task3_id = client.post("/tasks/", json={"name": "Task without CF value", "list_id": lid, "space_id": sid}, headers=headers).json()["id"]
 
     # --- Define, Enable, and Set Values all within the setup ---
-    
+
     # 1. Define a "Team" custom field
     cf_payload = {"name": "Team", "field_type": "Dropdown"}
     r_def = client.post(f"/workspaces/{wid}/custom-fields", json=cf_payload, headers=headers)
@@ -3617,11 +3617,11 @@ def test_filter_by_custom_field_value(client, seeded_data):
             }
         ]
     }
-    
+
     r = client.post(f"/workspaces/{wid}/tasks/filter", json=filter_payload, headers=headers)
     assert r.status_code == 200, r.text
     body = r.json()
-    
+
     assert body["count"] == 1
     filtered_task_id = body["groups"][0]["tasks"][0]["id"]
     assert filtered_task_id == task1_id
@@ -3645,11 +3645,11 @@ def test_filter_by_custom_field_is_empty(client, seeded_data):
             }
         ]
     }
-    
+
     r = client.post(f"/workspaces/{wid}/tasks/filter", json=filter_payload, headers=headers)
     assert r.status_code == 200, r.text
     body = r.json()
-    
+
     assert body["count"] == 1
     filtered_task_id = body["groups"][0]["tasks"][0]["id"]
     assert filtered_task_id == task3_id
@@ -4048,7 +4048,7 @@ def test_protected_endpoint(client: TestClient):
     token = _login(client)
     # FIX: The path must include the router's prefix "/auth"
     r = client.get("/auth/protected", headers={"Authorization": f"Bearer {token}"})
-    
+
     # The original assertion is correct, the path was the issue.
     assert r.status_code in (200, 204)
 
@@ -4538,16 +4538,16 @@ def seeded_data(client):
     """Sets up a user, workspace, lists, tags, and tasks for filter tests."""
     token = _register_and_login(client, "filter-user@example.com")
     headers = _auth_headers(token)
-    
+
     r = client.post("/workspaces/", json={"name": "Filter Test WS"}, headers=headers)
     wid = r.json()["id"]
-    
+
     r = client.post("/spaces/", json={"name": "Filter Test Space", "workspace_id": wid}, headers=headers)
     sid = r.json()["id"]
 
     r = client.post("/lists/", json={"name": "List A", "space_id": sid}, headers=headers)
     lid_a = r.json()["id"]
-    
+
     r = client.post("/lists/", json={"name": "List B", "space_id": sid}, headers=headers)
     lid_b = r.json()["id"]
 
@@ -4557,7 +4557,7 @@ def seeded_data(client):
     task1_id = client.post("/tasks/", json={"name": "Fix login bug", "list_id": lid_a, "space_id": sid, "status": "In Progress", "priority": "High"}, headers=headers).json()["id"]
     task2_id = client.post("/tasks/", json={"name": "Develop API endpoint", "list_id": lid_a, "space_id": sid, "status": "To Do", "priority": "High"}, headers=headers).json()["id"]
     task3_id = client.post("/tasks/", json={"name": "Deploy to staging", "list_id": lid_b, "space_id": sid, "status": "In Progress", "priority": "Normal"}, headers=headers).json()["id"]
-    
+
     client.post(f"/tasks/{task1_id}/tags:assign", json={"tag_ids": [tag1_id, tag2_id]}, headers=headers)
     client.post(f"/tasks/{task2_id}/tags:assign", json={"tag_ids": [tag2_id]}, headers=headers)
 
@@ -4627,9 +4627,9 @@ def test_grouping_by_status(client, seeded_data):
     r = client.post(f"/workspaces/{seeded_data['wid']}/tasks/filter", json=payload, headers=seeded_data["headers"])
     assert r.status_code == 200
     body = r.json()
-    
+
     groups = {group["group"]: {task["id"] for task in group["tasks"]} for group in body["groups"]}
-    
+
     assert "In Progress" in groups
     assert "To Do" in groups
     assert groups["In Progress"] == {seeded_data["task1_id"], seeded_data["task3_id"]}
@@ -4639,10 +4639,10 @@ def test_filter_permissions_for_outsider(client, seeded_data):
     """Ensure an unauthorized user cannot access the filter endpoint."""
     outsider_token = _register_and_login(client, "outsider-filter@example.com")
     outsider_headers = _auth_headers(outsider_token)
-    
+
     payload = {"scope": {"workspace_id": seeded_data["wid"]}}
     r = client.post(f"/workspaces/{seeded_data['wid']}/tasks/filter", json=payload, headers=outsider_headers)
-    
+
     assert r.status_code == 403
 
 
@@ -4946,8 +4946,3 @@ def test_write_requires_membership__outsider_403_then_member_200(client, db_sess
     body = r.json()
     assert body["name"] == "Secured Space"
     assert str(body["workspace_id"]) == str(workspace_id)
-
-
-
-
-

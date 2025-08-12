@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional, Callable, Any
+from typing import Any, Callable, Optional
 
 from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.models.core_entities import User, WorkspaceMember  # type: ignore
 from app.security import get_current_user
-from app.models.core_entities import WorkspaceMember, User  # type: ignore
 
 
 class Role(str, Enum):
@@ -95,14 +95,19 @@ def require_role(
 
 # ----- Convenience checks aligned with the role matrix -----
 
+
 def can_manage_workspace(db: Session, *, user_id: Any, workspace_id: Any) -> bool:
     # Admin+ can manage workspace-level settings and members
-    return has_min_role(db, user_id=user_id, workspace_id=workspace_id, minimum=Role.ADMIN)
+    return has_min_role(
+        db, user_id=user_id, workspace_id=workspace_id, minimum=Role.ADMIN
+    )
 
 
 def can_edit_content(db: Session, *, user_id: Any, workspace_id: Any) -> bool:
     # Member+ can create/edit content within accessible spaces/lists
-    return has_min_role(db, user_id=user_id, workspace_id=workspace_id, minimum=Role.MEMBER)
+    return has_min_role(
+        db, user_id=user_id, workspace_id=workspace_id, minimum=Role.MEMBER
+    )
 
 
 def can_view_workspace(db: Session, *, user_id: Any, workspace_id: Any) -> bool:
@@ -118,6 +123,7 @@ def require_workspace_role_dependency(minimum: Role) -> Callable:
       @router.post("/workspaces/{workspace_id}/spaces",
                    dependencies=[Depends(require_workspace_role_dependency(Role.MEMBER))])
     """
+
     def _dep(
         workspace_id: int,
         db: Session = Depends(get_db),
@@ -137,7 +143,10 @@ def require_workspace_role_dependency(minimum: Role) -> Callable:
 # These keep older imports working while we migrate.
 # Prefer the newer helpers above in new code.
 
-def get_user_role_for_workspace(db: Session, user_id: Any, workspace_id: Any) -> Optional[str]:
+
+def get_user_role_for_workspace(
+    db: Session, user_id: Any, workspace_id: Any
+) -> Optional[str]:
     """
     OLD NAME — use get_workspace_role() instead.
     Returns the role as a string (e.g., 'Owner') or None if not a member.

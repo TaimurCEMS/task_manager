@@ -1,9 +1,16 @@
 from typing import Dict, Tuple
 
-def _register(client, email: str, password: str = "Passw0rd!", full_name: str = "Test User"):
-    r = client.post("/auth/register", json={"email": email, "password": password, "full_name": full_name})
+
+def _register(
+    client, email: str, password: str = "Passw0rd!", full_name: str = "Test User"
+):
+    r = client.post(
+        "/auth/register",
+        json={"email": email, "password": password, "full_name": full_name},
+    )
     assert r.status_code in (200, 201), r.text
     return r.json()
+
 
 def _login_token(client, email: str, password: str = "Passw0rd!") -> str:
     r = client.post(
@@ -17,15 +24,26 @@ def _login_token(client, email: str, password: str = "Passw0rd!") -> str:
     assert r.status_code == 200 and "access_token" in r.json(), r.text
     return r.json()["access_token"]
 
+
 def _auth_headers(token: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
+
 def _bootstrap(client, headers) -> Tuple[str, str, str, str]:
-    r = client.post("/workspaces/", json={"name": "W"}, headers=headers); wid = r.json()["id"]
-    r = client.post("/spaces/", json={"name": "S", "workspace_id": wid}, headers=headers); sid = r.json()["id"]
-    r = client.post("/lists/", json={"name": "L", "space_id": sid}, headers=headers); lid = r.json()["id"]
-    r = client.post("/tasks/", json={"name": "T1", "list_id": lid, "space_id": sid}, headers=headers); tid = r.json()["id"]
+    r = client.post("/workspaces/", json={"name": "W"}, headers=headers)
+    wid = r.json()["id"]
+    r = client.post(
+        "/spaces/", json={"name": "S", "workspace_id": wid}, headers=headers
+    )
+    sid = r.json()["id"]
+    r = client.post("/lists/", json={"name": "L", "space_id": sid}, headers=headers)
+    lid = r.json()["id"]
+    r = client.post(
+        "/tasks/", json={"name": "T1", "list_id": lid, "space_id": sid}, headers=headers
+    )
+    tid = r.json()["id"]
     return wid, sid, lid, tid
+
 
 def test_comment_auto_adds_watcher(client):
     _register(client, "owner+auto@example.com")

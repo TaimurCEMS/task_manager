@@ -1,7 +1,9 @@
 # File: /app/schemas/filters.py | Version: 1.2 | Title: Filters & Grouping Schemas
 from __future__ import annotations
+
 from enum import Enum
-from typing import List, Optional, Union, Any
+from typing import Any, List, Optional, Union
+
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -54,7 +56,9 @@ class Scope(BaseModel):
     @model_validator(mode="after")
     def at_least_one_scope(self) -> "Scope":
         if not any([self.list_id, self.folder_id, self.space_id, self.workspace_id]):
-            raise ValueError("Provide one scope: workspace_id, space_id, folder_id, or list_id")
+            raise ValueError(
+                "Provide one scope: workspace_id, space_id, folder_id, or list_id"
+            )
         return self
 
 

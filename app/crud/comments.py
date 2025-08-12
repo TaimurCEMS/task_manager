@@ -9,7 +9,9 @@ from sqlalchemy.orm import Session
 from app.models import core_entities as models
 
 
-def create_comment(db: Session, *, task_id: UUID, user_id: str, body: str) -> models.Comment:
+def create_comment(
+    db: Session, *, task_id: UUID, user_id: str, body: str
+) -> models.Comment:
     try:
         comment = models.Comment(
             task_id=str(task_id),
@@ -31,7 +33,11 @@ def get_comment(db: Session, *, comment_id: UUID) -> Optional[models.Comment]:
 
 
 def get_comments_for_task(
-    db: Session, *, task_id: UUID, limit: Optional[int] = None, offset: Optional[int] = None
+    db: Session,
+    *,
+    task_id: UUID,
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
 ) -> List[models.Comment]:
     q = (
         db.query(models.Comment)
@@ -45,7 +51,9 @@ def get_comments_for_task(
     return q.all()
 
 
-def update_comment(db: Session, *, comment_id: UUID, body: str) -> Optional[models.Comment]:
+def update_comment(
+    db: Session, *, comment_id: UUID, body: str
+) -> Optional[models.Comment]:
     comment = db.get(models.Comment, str(comment_id))
     if not comment:
         return None  # caller handles 404

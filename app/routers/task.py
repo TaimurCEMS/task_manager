@@ -1,26 +1,32 @@
-# File: /app/routers/task.py | Version: 1.8 | Title: Tasks, Subtasks, Comments Router (+assignees upsert)
+# File: /app/routers/task.py | Version: 2.1 | Title: Tasks, Subtasks, Comments Router (+assignees upsert + list search)
 from __future__ import annotations
 
-from typing import List
+import logging
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.permissions import Role, get_workspace_role, has_min_role, require_role
+from app.crud import comments as crud_comments
 from app.crud import core_entities as crud_core
 from app.crud import task as crud_task
-from app.crud import comments as crud_comments
 from app.crud import watchers as crud_watchers
 from app.crud.assignees import set_task_assignees
-
 from app.db.session import get_db
-from app.schemas import task as schema
+from app.models.core_entities import Task, User
 from app.schemas import comments as comment_schema
+from app.schemas import task as schema
 from app.security import get_current_user
-from app.core.permissions import Role, require_role, get_workspace_role, has_min_role
-from app.models.core_entities import User  # type hint
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Tasks"])
+
+# =========================
+# TASKS
+# =========================
 
 
 @router.post("/tasks/", response_model=schema.TaskOut)
@@ -32,11 +38,16 @@ def create_task(
     space = crud_core.get_space(db, data.space_id)
     if not space:
         raise HTTPException(status_code=404, detail="Space not found")
-    require_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id), minimum=Role.MEMBER)
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
 
     created = crud_task.create_task(db, data)
 
-    # NEW: persist assignees if provided
+    # persist assignees if provided
     set_task_assignees(db, task_id=str(created.id), user_ids=data.assignee_ids)
 
     return created
@@ -55,7 +66,9 @@ def get_task(
     if not parent_list:
         raise HTTPException(status_code=404, detail="List not found")
     space = crud_core.get_space(db, parent_list.space_id)
-    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id))
+    role = get_workspace_role(
+        db, user_id=str(current_user.id), workspace_id=str(space.workspace_id)
+    )
     if role is None:
         raise HTTPException(status_code=403, detail="No access to this task")
     return task
@@ -71,10 +84,74 @@ def get_tasks_by_list(
     if not parent_list:
         raise HTTPException(status_code=404, detail="List not found")
     space = crud_core.get_space(db, parent_list.space_id)
-    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id))
+    role = get_workspace_role(
+        db, user_id=str(current_user.id), workspace_id=str(space.workspace_id)
+    )
     if role is None:
         raise HTTPException(status_code=403, detail="No access to this list")
     return crud_task.get_tasks_by_list(db, list_id)
+
+
+@router.get("/tasks/by-list/{list_id}/search")
+def search_tasks_by_list(
+    list_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    sort: Optional[str] = Query(
+        "created_at", pattern="^(created_at|due_date|priority|name|status)$"
+    ),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    parent_list = crud_core.get_list(db, list_id)
+    if not parent_list:
+        raise HTTPException(status_code=404, detail="List not found")
+    space = crud_core.get_space(db, parent_list.space_id)
+    role = get_workspace_role(
+        db, user_id=str(current_user.id), workspace_id=str(space.workspace_id)
+    )
+    if role is None:
+        raise HTTPException(status_code=403, detail="No access to this list")
+
+    sort_map = {
+        "created_at": Task.created_at,
+        "due_date": Task.due_date,
+        "priority": Task.priority,
+        "name": Task.name,
+        "status": Task.status,
+    }
+    col = sort_map.get(sort or "created_at", Task.created_at)
+
+    base = db.query(Task).filter(Task.list_id == str(list_id))
+    total = (
+        db.query(func.count(Task.id)).filter(Task.list_id == str(list_id)).scalar() or 0
+    )
+    rows = (
+        base.order_by(col.desc() if order == "desc" else col.asc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    def _row_to_minimal_dict(t: Task) -> Dict[str, Any]:
+        return {
+            "id": t.id,
+            "name": t.name,
+            "status": getattr(t, "status", None),
+            "priority": getattr(t, "priority", None),
+            "due_date": getattr(t, "due_date", None),
+            "list_id": str(t.list_id),
+        }
+
+    return {
+        "items": [_row_to_minimal_dict(t) for t in rows],
+        "total": int(total),
+        "limit": limit,
+        "offset": offset,
+        "sort": sort,
+        "order": order,
+    }
 
 
 @router.put("/tasks/{task_id}", response_model=schema.TaskOut)
@@ -91,11 +168,16 @@ def update_task(
     if not parent_list:
         raise HTTPException(status_code=404, detail="List not found")
     space = crud_core.get_space(db, parent_list.space_id)
-    require_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id), minimum=Role.MEMBER)
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
 
     updated = crud_task.update_task(db, task_id, data)
 
-    # NEW: if the caller provided assignee_ids (including empty list), apply them
+    # if the caller provided assignee_ids (including empty list), apply them
     set_task_assignees(db, task_id=str(updated.id), user_ids=data.assignee_ids)
 
     return updated
@@ -114,14 +196,23 @@ def delete_task(
     if not parent_list:
         raise HTTPException(status_code=404, detail="List not found")
     space = crud_core.get_space(db, parent_list.space_id)
-    require_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id), minimum=Role.ADMIN)
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.ADMIN,
+    )
     deleted = crud_task.delete_task(db, task_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Task not found")
     return {"detail": "Task deleted"}
 
 
-# ---- Dependencies (MVP placeholders) ----
+# =========================
+# DEPENDENCIES
+# =========================
+
+
 @router.post("/tasks/dependencies/", response_model=schema.TaskDependencyOut)
 def create_dependency(
     data: schema.TaskDependencyCreate,
@@ -135,11 +226,18 @@ def create_dependency(
     if not parent_list:
         raise HTTPException(status_code=404, detail="List not found")
     space = crud_core.get_space(db, parent_list.space_id)
-    require_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id), minimum=Role.MEMBER)
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
     return crud_task.create_dependency(db, data)
 
 
-@router.get("/tasks/{task_id}/dependencies", response_model=List[schema.TaskDependencyOut])
+@router.get(
+    "/tasks/{task_id}/dependencies", response_model=List[schema.TaskDependencyOut]
+)
 def get_dependencies(
     task_id: UUID,
     db: Session = Depends(get_db),
@@ -152,13 +250,19 @@ def get_dependencies(
     if not parent_list:
         raise HTTPException(status_code=404, detail="List not found")
     space = crud_core.get_space(db, parent_list.space_id)
-    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id))
+    role = get_workspace_role(
+        db, user_id=str(current_user.id), workspace_id=str(space.workspace_id)
+    )
     if role is None:
         raise HTTPException(status_code=403, detail="No access to this task")
     return crud_task.get_dependencies_for_task(db, task_id)
 
 
-# ---- Subtasks ----
+# =========================
+# SUBTASKS
+# =========================
+
+
 @router.post("/tasks/{task_id}/subtasks", response_model=schema.TaskOut)
 def create_subtask(
     task_id: UUID,
@@ -178,7 +282,12 @@ def create_subtask(
     if not space:
         raise HTTPException(status_code=404, detail="Space not found")
 
-    require_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id), minimum=Role.MEMBER)
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
 
     payload = schema.TaskCreate(
         list_id=UUID(parent.list_id),
@@ -195,7 +304,7 @@ def create_subtask(
     )
     created = crud_task.create_subtask(db, task_id, payload)
 
-    # NEW: persist assignees for subtask too (if provided)
+    # persist assignees for subtask too (if provided)
     set_task_assignees(db, task_id=str(created.id), user_ids=data.assignee_ids)
 
     return created
@@ -219,7 +328,9 @@ def list_subtasks(
     if not space:
         raise HTTPException(status_code=404, detail="Space not found")
 
-    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id))
+    role = get_workspace_role(
+        db, user_id=str(current_user.id), workspace_id=str(space.workspace_id)
+    )
     if role is None:
         raise HTTPException(status_code=403, detail="No access to this task")
 
@@ -244,7 +355,12 @@ def move_subtask(
     if not space:
         raise HTTPException(status_code=404, detail="Space not found")
 
-    require_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id), minimum=Role.MEMBER)
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
 
     new_parent_uuid = body.new_parent_task_id
     if new_parent_uuid is not None:
@@ -259,7 +375,11 @@ def move_subtask(
     return moved
 
 
-# ---- Comments ----
+# =========================
+# COMMENTS
+# =========================
+
+
 @router.post("/tasks/{task_id}/comments", response_model=comment_schema.CommentOut)
 def create_comment(
     task_id: UUID,
@@ -267,6 +387,10 @@ def create_comment(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """
+    Create a comment on a task (Member+ required in the task's workspace).
+    Also auto-follows the task for the commenting user (idempotent).
+    """
     task = crud_task.get_task(db, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -278,13 +402,23 @@ def create_comment(
     if not space:
         raise HTTPException(status_code=404, detail="Space not found")
 
-    require_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id), minimum=Role.MEMBER)
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
 
-    created = crud_comments.create_comment(db, task_id=task_id, user_id=str(current_user.id), body=body.body)
+    created = crud_comments.create_comment(
+        db, task_id=task_id, user_id=str(current_user.id), body=body.body
+    )
+
+    # best-effort follow; log on failure (avoid bare pass for Bandit B110)
     try:
         crud_watchers.follow_task(db, task_id=task_id, user_id=str(current_user.id))
-    except Exception:
-        pass
+    except Exception:  # noqa: BLE001
+        logger.warning("follow_task failed (non-fatal)", exc_info=True)
+
     return created
 
 
@@ -307,14 +441,22 @@ def list_comments(
     if not space:
         raise HTTPException(status_code=404, detail="Space not found")
 
-    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id))
+    role = get_workspace_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+    )
     if role is None:
         raise HTTPException(status_code=403, detail="No access to this task")
 
-    return crud_comments.get_comments_for_task(db, task_id=task_id, limit=limit, offset=offset)
+    return crud_comments.get_comments_for_task(
+        db, task_id=task_id, limit=limit, offset=offset
+    )
 
 
-@router.put("/tasks/{task_id}/comments/{comment_id}", response_model=comment_schema.CommentOut)
+@router.put(
+    "/tasks/{task_id}/comments/{comment_id}", response_model=comment_schema.CommentOut
+)
 def update_comment(
     task_id: UUID,
     comment_id: UUID,
@@ -333,14 +475,21 @@ def update_comment(
     if not space:
         raise HTTPException(status_code=404, detail="Space not found")
 
-    require_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id), minimum=Role.MEMBER)
+    require_role(
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.MEMBER,
+    )
 
     comment = crud_comments.get_comment(db, comment_id=comment_id)
     if not comment or comment.task_id != str(task_id):
         raise HTTPException(status_code=404, detail="Comment not found")
 
     if comment.user_id != str(current_user.id):
-        raise HTTPException(status_code=403, detail="Only the author can edit this comment")
+        raise HTTPException(
+            status_code=403, detail="Only the author can edit this comment"
+        )
 
     updated = crud_comments.update_comment(db, comment_id=comment_id, body=body.body)
     if not updated:
@@ -370,11 +519,17 @@ def delete_comment(
     if not comment or comment.task_id != str(task_id):
         raise HTTPException(status_code=404, detail="Comment not found")
 
+    # Use has_min_role() for cleaner, more maintainable permission check
     is_admin_plus = has_min_role(
-        db, user_id=str(current_user.id), workspace_id=str(space.workspace_id), minimum=Role.ADMIN
+        db,
+        user_id=str(current_user.id),
+        workspace_id=str(space.workspace_id),
+        minimum=Role.ADMIN,
     )
     if not (comment.user_id == str(current_user.id) or is_admin_plus):
-        raise HTTPException(status_code=403, detail="Not allowed to delete this comment")
+        raise HTTPException(
+            status_code=403, detail="Not allowed to delete this comment"
+        )
 
     ok = crud_comments.delete_comment(db, comment_id=comment_id)
     if not ok:

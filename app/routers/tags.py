@@ -5,18 +5,19 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.core.permissions import Role, get_workspace_role, require_role
 from app.crud import core_entities as crud_core
-from app.crud import task as crud_task
 from app.crud import tags as crud_tags
+from app.crud import task as crud_task
 from app.db.session import get_db
+from app.routers.auth_dependencies import get_me
 from app.schemas import tags as tag_schema
 from app.schemas import task as task_schema
-from app.routers.auth_dependencies import get_me
-from app.core.permissions import Role, require_role, get_workspace_role
 
 router = APIRouter(tags=["Tags"])
 
 # ---------- Workspace-level tags ----------
+
 
 @router.post("/workspaces/{workspace_id}/tags", response_model=tag_schema.TagOut)
 def create_tag(
@@ -37,7 +38,9 @@ def create_tag(
     if not ws:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
-    created = crud_tags.create_tag(db, workspace_id=workspace_id, name=data.name, color=data.color)
+    created = crud_tags.create_tag(
+        db, workspace_id=workspace_id, name=data.name, color=data.color
+    )
     return created
 
 
@@ -47,13 +50,16 @@ def list_workspace_tags(
     db: Session = Depends(get_db),
     current_user=Depends(get_me),
 ):
-    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(workspace_id))
+    role = get_workspace_role(
+        db, user_id=str(current_user.id), workspace_id=str(workspace_id)
+    )
     if role is None:
         raise HTTPException(status_code=403, detail="No access to this workspace")
     return crud_tags.get_workspace_tags(db, workspace_id=workspace_id)
 
 
 # ---------- Task ↔ tag (single) ----------
+
 
 @router.get("/tasks/{task_id}/tags", response_model=List[tag_schema.TagOut])
 def list_task_tags(
@@ -66,7 +72,9 @@ def list_task_tags(
         raise HTTPException(status_code=404, detail="Task not found")
     parent_list = crud_core.get_list(db, task.list_id)
     space = crud_core.get_space(db, parent_list.space_id)
-    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(space.workspace_id))
+    role = get_workspace_role(
+        db, user_id=str(current_user.id), workspace_id=str(space.workspace_id)
+    )
     if role is None:
         raise HTTPException(status_code=403, detail="No access to this task")
     return crud_tags.get_tags_for_task(db, task_id=task_id)
@@ -134,6 +142,7 @@ def unassign_tag(
 
 # ---------- Task ↔ tag (bulk) ----------
 
+
 @router.post("/tasks/{task_id}/tags:assign", response_model=tag_schema.BulkAssignResult)
 def bulk_assign_tags(
     task_id: UUID,
@@ -163,7 +172,9 @@ def bulk_assign_tags(
     return {"assigned": n}
 
 
-@router.post("/tasks/{task_id}/tags:unassign", response_model=tag_schema.BulkUnassignResult)
+@router.post(
+    "/tasks/{task_id}/tags:unassign", response_model=tag_schema.BulkUnassignResult
+)
 def bulk_unassign_tags(
     task_id: UUID,
     body: tag_schema.TagIdsIn,
@@ -194,6 +205,7 @@ def bulk_unassign_tags(
 
 # ---------- Filters ----------
 
+
 @router.get("/tags/{tag_id}/tasks", response_model=List[task_schema.TaskOut])
 def list_tasks_for_tag(
     tag_id: UUID,
@@ -205,24 +217,32 @@ def list_tasks_for_tag(
         raise HTTPException(status_code=404, detail="Tag not found")
 
     # membership in the tag's workspace
-    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=tag.workspace_id)
+    role = get_workspace_role(
+        db, user_id=str(current_user.id), workspace_id=tag.workspace_id
+    )
     if role is None:
         raise HTTPException(status_code=403, detail="No access to this workspace")
 
     return crud_tags.get_tasks_for_tag(db, tag_id=tag_id)
 
 
-@router.get("/workspaces/{workspace_id}/tasks/by-tags", response_model=List[task_schema.TaskOut])
+@router.get(
+    "/workspaces/{workspace_id}/tasks/by-tags", response_model=List[task_schema.TaskOut]
+)
 def list_tasks_by_tags(
     workspace_id: UUID,
-    tag_ids: List[UUID] = Query(..., description="Repeat ?tag_ids=... for multiple tags"),
+    tag_ids: List[UUID] = Query(
+        ..., description="Repeat ?tag_ids=... for multiple tags"
+    ),
     match: Literal["any", "all"] = Query("any"),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user=Depends(get_me),
 ):
-    role = get_workspace_role(db, user_id=str(current_user.id), workspace_id=str(workspace_id))
+    role = get_workspace_role(
+        db, user_id=str(current_user.id), workspace_id=str(workspace_id)
+    )
     if role is None:
         raise HTTPException(status_code=403, detail="No access to this workspace")
 

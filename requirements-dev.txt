@@ -1,0 +1,10 @@
+# File: requirements-dev.txt | Version: 1.1 | Title: Dev/tooling dependencies (no runtime include)
+# NOTE: This file intentionally does NOT include "-r requirements.txt" to avoid reinstalling runtime pins.
+pytest==8.2.2
+pytest-cov==5.0.0
+black==24.4.2
+ruff==0.4.10
+isort==5.13.2
+pre-commit==3.7.1
+bandit==1.7.9
+pip-audit==2.7.3

@@ -1,11 +1,11 @@
 # File: tests/test_auth.py | Version: 1.1 | Path: /tests/test_auth.py
 from fastapi.testclient import TestClient
 
+
 def test_register_and_login(client: TestClient):
     # Adjust payload keys/routes if your API expects different names
     reg = client.post(
-        "/auth/register",
-        json={"email": "test@example.com", "password": "secret123"}
+        "/auth/register", json={"email": "test@example.com", "password": "secret123"}
     )
     assert reg.status_code in (200, 201)
 

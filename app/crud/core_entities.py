@@ -1,14 +1,13 @@
 # File: /app/crud/core_entities.py | Version: 1.6 | Path: /app/crud/core_entities.py
-from typing import List, Optional
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.schemas import core_entities as schema
 from app.models import core_entities as models
-
+from app.schemas import core_entities as schema
 
 # ----- WORKSPACE CRUD -----
+
 
 def create_workspace(db: Session, data: schema.WorkspaceCreate, owner_id: str):
     """
@@ -93,6 +92,7 @@ def delete_workspace(db: Session, workspace_id: UUID):
 
 # ----- SPACE CRUD -----
 
+
 def create_space(db: Session, data: schema.SpaceCreate):
     new_space = models.Space(**data.model_dump())
     db.add(new_space)
@@ -141,6 +141,7 @@ def delete_space(db: Session, space_id: UUID):
 
 # ----- FOLDER CRUD -----
 
+
 def create_folder(db: Session, data: schema.FolderCreate):
     new_folder = models.Folder(**data.model_dump())
     db.add(new_folder)
@@ -188,6 +189,7 @@ def delete_folder(db: Session, folder_id: UUID):
 
 
 # ----- LIST CRUD -----
+
 
 def create_list(db: Session, data: schema.ListCreate):
     new_list = models.List(**data.model_dump())

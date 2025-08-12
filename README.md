@@ -1,6 +1,6 @@
 # Task Manager (FastAPI)
 
-A ClickUp-style backend built with **FastAPI**, **SQLAlchemy**, and **SQLite**.  
+A ClickUp-style backend built with **FastAPI**, **SQLAlchemy**, and **SQLite**.
 Current scope covers **Phase 1–3** of the plan: authentication, core entities (Workspace/Space/Folder/List), **Tasks** + **Task Dependencies**, and role checks.
 
 ---
@@ -70,7 +70,7 @@ python -m pytest -q
 
 ### Register → Login → Call protected endpoints
 
-**Register:** `POST /auth/register`  
+**Register:** `POST /auth/register`
 Example JSON body:
 ```json
 {
@@ -80,7 +80,7 @@ Example JSON body:
 }
 ```
 
-**Login (token):** `POST /auth/token` (form-encoded: `username`, `password`)  
+**Login (token):** `POST /auth/token` (form-encoded: `username`, `password`)
 Example (PowerShell line continuation uses backtick ^; remove for Bash):
 ```bash
 curl -X POST http://127.0.0.1:8000/auth/token ^

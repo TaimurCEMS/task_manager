@@ -1,12 +1,13 @@
 # File: /app/schemas/task.py | Version: 1.0 | Title: Task Schemas (Pydantic v2, BaseSchema)
 from __future__ import annotations
-from typing import Optional, List
+
+from typing import List, Optional
 from uuid import UUID
 
 from app.schemas._base import BaseSchema
 
-
 # ---- Core Task payloads ----
+
 
 class TaskCreate(BaseSchema):
     list_id: UUID
@@ -52,6 +53,7 @@ class TaskOut(BaseSchema):
 
 # ---- Dependencies ----
 
+
 class TaskDependencyCreate(BaseSchema):
     task_id: UUID
     depends_on_task_id: UUID
@@ -66,6 +68,7 @@ class TaskDependencyOut(BaseSchema):
 
 
 # ---- Subtask helpers ----
+
 
 class MoveSubtaskRequest(BaseSchema):
     new_parent_task_id: Optional[UUID] = None

@@ -1,117 +1,186 @@
-# File: app/routers/auth.py | Version: 1.2 | Path: /app/routers/auth.py
-from datetime import timedelta
-from fastapi import APIRouter, Depends, HTTPException, status, Request
-from fastapi.security import OAuth2PasswordRequestForm
+# File: /app/routers/auth.py | Version: 2.8 | Title: Auth Router (JSON+form tolerant) + Default Workspace (owner_id set) + Access & Refresh Tokens
+from __future__ import annotations
+
+from typing import Any, Dict, Optional
+
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models import User, Workspace, WorkspaceMember
-from app.schemas.auth import TokenResponse  # response model only
+from app.models.core_entities import User, Workspace
 from app.security import (
     create_access_token,
+    create_refresh_token,
     get_current_user,
     get_password_hash,
     verify_password,
 )
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+# Membership model used to list workspaces for a user in tests
+try:
+    from app.models.core_entities import WorkspaceMember
+except Exception:  # pragma: no cover
+    WorkspaceMember = None  # type: ignore
+
+router = APIRouter(prefix="/auth", tags=["Auth"])
 
 
-async def _read_payload(req: Request) -> dict:
-    """
-    Accepts JSON or form (x-www-form-urlencoded / multipart) and returns a dict.
-    Also tolerates clients that send 'username' instead of 'email'.
-    """
-    ct = req.headers.get("content-type", "")
-    data: dict
-    try:
-        if "application/json" in ct:
-            data = await req.json()
-        elif "application/x-www-form-urlencoded" in ct or "multipart/form-data" in ct:
-            form = await req.form()
-            data = dict(form)
-        else:
-            # Try JSON first, fall back to form
-            try:
-                data = await req.json()
-            except Exception:
-                form = await req.form()
-                data = dict(form)
-    except Exception:
-        data = {}
+# ---------------------------
+# Utilities
+# ---------------------------
 
-    # Normalize common auth field names
-    if "email" not in data and "username" in data:
-        data["email"] = data.get("username")
+
+async def _read_json_or_form(request: Request) -> Dict[str, Any]:
+    """Accept JSON or form-encoded bodies and normalize keys."""
+    ctype = (request.headers.get("content-type") or "").lower()
+    data: Dict[str, Any] = {}
+    if "application/json" in ctype:
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                data = body
+        except Exception:
+            data = {}
+    else:
+        form = await request.form()
+        data = dict(form)
+
+    # alias: username -> email (OAuth-style)
+    if "username" in data and "email" not in data:
+        data["email"] = data["username"]
     return data
 
 
-@router.post("/register", response_model=TokenResponse)
-async def register(req: Request, db: Session = Depends(get_db)):
-    payload = await _read_payload(req)
-    email = (payload.get("email") or "").strip().lower()
-    password = payload.get("password")
-    full_name = payload.get("full_name")
+def _ensure_default_workspace(db: Session, user: User) -> None:
+    """
+    Ensure the user has at least one workspace and a membership row.
+    Tests assume registration yields a first workspace immediately.
+    """
+    if WorkspaceMember is None:
+        # If membership model import fails, still create a workspace so owner_id constraint is satisfied.
+        pass
+    else:
+        existing = (
+            db.query(Workspace)
+            .join(WorkspaceMember, WorkspaceMember.workspace_id == Workspace.id)
+            .filter(WorkspaceMember.user_id == str(user.id))
+            .first()
+        )
+        if existing:
+            return
 
-    if not email or not password:
-        raise HTTPException(status_code=422, detail="email and password are required")
+    # Create workspace with REQUIRED owner_id set (fixes NOT NULL constraint)
+    name = f"{(user.email or 'user').split('@', 1)[0]}'s Workspace"
+    ws = Workspace(name=name, owner_id=str(user.id))
+    db.add(ws)
+    db.flush()  # ws.id available
 
-    existing = db.query(User).filter(User.email == email).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
+    # Create membership so GET /workspaces/ includes it for the user
+    if WorkspaceMember is not None:
+        membership = WorkspaceMember(
+            workspace_id=str(ws.id), user_id=str(user.id), role="Owner"
+        )
+        db.add(membership)
 
-    user = User(
-        email=email,
-        hashed_password=get_password_hash(password),
-        full_name=full_name,
-        is_active=True,
-    )
-    db.add(user)
-    db.flush()  # get user.id
-
-    ws_name = f"{email.split('@')[0]}'s workspace" if "@" in email else f"{email}'s workspace"
-    workspace = Workspace(name=ws_name, owner_id=user.id)
-    db.add(workspace)
-    db.flush()
-
-    membership = WorkspaceMember(
-        workspace_id=workspace.id, user_id=user.id, role="owner", is_active=True
-    )
-    db.add(membership)
     db.commit()
 
-    token = create_access_token({"sub": user.id}, expires_delta=timedelta(minutes=60))
-    return TokenResponse(access_token=token, token_type="bearer")
+
+def _issue_tokens_for_user(user: User) -> Dict[str, str]:
+    sub = {"sub": str(user.id)}
+    return {
+        "access_token": create_access_token(sub),
+        "refresh_token": create_refresh_token(sub),
+        "token_type": "bearer",
+    }
 
 
-@router.post("/login", response_model=TokenResponse)
-async def login(req: Request, db: Session = Depends(get_db)):
-    payload = await _read_payload(req)
+# ---------------------------
+# Endpoints
+# ---------------------------
+
+
+@router.post("/register")
+async def register(request: Request, db: Session = Depends(get_db)):
+    """
+    Register a user. Idempotent:
+      - If new: create user, bootstrap default workspace + Owner membership.
+      - If exists: ensure workspace exists and return 200.
+    Accepts JSON or form {email, password, [full_name]}.
+    Returns minimal user info; clients/tests then call /auth/login.
+    """
+    payload = await _read_json_or_form(request)
+    email = (payload.get("email") or "").strip().lower()
+    password = payload.get("password")
+    full_name: Optional[str] = payload.get("full_name")
+
+    if not email or not password:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Email and password required",
+        )
+
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        user = User(
+            email=email,
+            full_name=full_name,
+            hashed_password=get_password_hash(password),
+            is_active=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    _ensure_default_workspace(db, user)
+    return {"id": str(user.id), "email": user.email}
+
+
+@router.post("/login")
+async def login(request: Request, db: Session = Depends(get_db)):
+    """
+    Login with JSON or form {email/username, password}.
+    Returns both access and refresh tokens for later /auth/refresh use.
+    """
+    payload = await _read_json_or_form(request)
     email = (payload.get("email") or "").strip().lower()
     password = payload.get("password")
 
     if not email or not password:
-        raise HTTPException(status_code=422, detail="email/username and password are required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Email and password required",
+        )
 
     user = db.query(User).filter(User.email == email).first()
     if not user or not verify_password(password, user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+        )
 
-    token = create_access_token({"sub": user.id}, expires_delta=timedelta(minutes=60))
-    return TokenResponse(access_token=token, token_type="bearer")
+    return _issue_tokens_for_user(user)
 
 
-@router.post("/token", response_model=TokenResponse)
-def token(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    # OAuth2 form uses "username" as the identifier; here we treat it as email
-    email = form.username.strip().lower()
+@router.post("/token")
+def login_oauth_form(
+    db: Session = Depends(get_db),
+    username: str = Form(...),
+    password: str = Form(...),
+):
+    """
+    OAuth2 form variant (used by some tests/tools). Returns access + refresh tokens.
+    """
+    email = (username or "").strip().lower()
     user = db.query(User).filter(User.email == email).first()
-    if not user or not verify_password(form.password, user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    token = create_access_token({"sub": user.id}, expires_delta=timedelta(minutes=60))
-    return TokenResponse(access_token=token, token_type="bearer")
+    if not user or not verify_password(password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+        )
+
+    return _issue_tokens_for_user(user)
 
 
 @router.get("/protected")
 def protected(current_user: User = Depends(get_current_user)):
-    return {"ok": True, "user": {"id": current_user.id, "email": current_user.email}}
+    return {"ok": True, "user_id": str(current_user.id)}

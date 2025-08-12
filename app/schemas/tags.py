@@ -1,7 +1,7 @@
 # File: /app/schemas/tags.py | Version: 1.2 | Path: /app/schemas/tags.py
 from __future__ import annotations
 
-from typing import Optional, List
+from typing import List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -22,6 +22,7 @@ class TagOut(BaseModel):
 
 
 # -------- Bulk operations --------
+
 
 class TagIdsIn(BaseModel):
     tag_ids: List[UUID]

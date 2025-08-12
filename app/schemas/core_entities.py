@@ -1,13 +1,13 @@
 # File: /app/schemas/core_entities.py | Version: 2.0
 from __future__ import annotations
 
-from typing import Optional
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
 
-
 # -------------------- Workspace --------------------
+
 
 class WorkspaceCreate(BaseModel):
     name: str
@@ -30,6 +30,7 @@ class WorkspaceOut(BaseModel):
 
 # -------------------- Space --------------------
 
+
 class SpaceCreate(BaseModel):
     name: str
     workspace_id: str
@@ -51,6 +52,7 @@ class SpaceOut(BaseModel):
 
 # -------------------- Folder --------------------
 
+
 class FolderCreate(BaseModel):
     name: str
     space_id: str
@@ -71,6 +73,7 @@ class FolderOut(BaseModel):
 
 
 # -------------------- List --------------------
+
 
 class ListCreate(BaseModel):
     name: str
