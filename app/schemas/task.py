@@ -50,7 +50,6 @@ class TaskOut(BaseSchema):
     time_estimate: Optional[int] = None
     parent_task_id: Optional[str] = None
 
-
 # ---- Dependencies ----
 
 
