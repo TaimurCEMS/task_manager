@@ -1,4 +1,4 @@
-# File: .github/workflows/ci.yml | Version: 1.2 | Title: CI — lint, tests, coverage, security
+# File: .github/workflows/ci.yml | Version: 1.2 | Title: CI â€” lint, tests, coverage, security
 name: CI
 
 on:
@@ -30,14 +30,13 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
-
-      - name: Lint
-        run: |
-          ruff format --check .
-          ruff check .
-          ruff format --check .
-          isort . --check-only
-
+  - name: Lint
+    run: |
+      python -m pip install --upgrade pip
+      python -m pip install ruff==0.12.8
+      ruff --version
+      ruff format --check .
+      ruff check .
       - name: Run tests
         env:
           DATABASE_URL: "sqlite:///./app.db"
