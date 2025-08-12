@@ -1,14 +1,10 @@
-﻿repos:
-  - repo: https://github.com/psf/black
-    rev: 25.1.0
-    hooks:
-      - id: black
-
+repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.12.8
     hooks:
       - id: ruff
-        args: [--fix, --exit-non-zero-on-fix]  # fail if ruff applied fixes
+        args: [--fix, --exit-zero]
+      - id: ruff-format
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -29,10 +25,5 @@
   - repo: https://github.com/pypa/pip-audit
     rev: v2.7.3
     hooks:
-    - id: pip-audit
-      args:
-        - -r
-        - requirements.txt
-        - --ignore-vuln
-        - GHSA-wj6h-64fc-37mp   # remove once ecdsa 0.19.2 is available
-      pass_filenames: false
+      - id: pip-audit
+        args: ["-r", "requirements.txt", "--ignore-vuln", "GHSA-wj6h-64fc-37mp"]

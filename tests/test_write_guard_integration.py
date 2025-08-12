@@ -53,9 +53,9 @@ def test_write_requires_membership__outsider_403_then_member_200(
     # 1) Outsider tries to create a Space -> should be 403
     payload = {"name": "Secured Space", "workspace_id": workspace_id}
     r = client.post("/spaces/", json=payload, headers=_auth_headers(token_u2))
-    assert (
-        r.status_code == 403
-    ), f"Expected 403 for outsider, got {r.status_code}: {r.text}"
+    assert r.status_code == 403, (
+        f"Expected 403 for outsider, got {r.status_code}: {r.text}"
+    )
 
     # 2) Add User2 as MEMBER in Workspace A (DB insert)
     user2 = db_session.query(User).filter(User.email == u2_email).first()
