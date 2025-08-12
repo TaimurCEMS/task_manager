@@ -35,13 +35,16 @@ class FilterRule(BaseModel):
     op: FilterOperator
     value: Optional[Union[str, int, float, List[Any]]] = None
 
+
 class TagsMatch(str, Enum):
     any = "any"
     all = "all"
 
+
 class TagsFilter(BaseModel):
     tag_ids: List[str] = Field(default_factory=list)
     match: TagsMatch = TagsMatch.any
+
 
 class Scope(BaseModel):
     list_id: Optional[str] = None
