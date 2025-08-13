@@ -7,13 +7,10 @@ on:
 
 jobs:
   alembic-diff:
-    # Safety: if a job ever did commit+push, skip runs from the bot
     if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
     env:
-      # Make "import app" work
       PYTHONPATH: ${{ github.workspace }}
-      # Use local SQLite for CI
       DATABASE_URL: sqlite:///./test.db
       LOG_LEVEL: INFO
       LOG_JSON: "false"
@@ -36,7 +33,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt || true
           pip install -r requirements-dev.txt || true
-          # Ensure alembic + DB drivers exist even if not pinned
           pip install alembic SQLAlchemy "psycopg2-binary" aiosqlite
 
       - name: Debug Python imports & env
@@ -46,6 +42,7 @@ jobs:
           print("sys.path[0] =", sys.path[0])
           print("PYTHONPATH  =", os.environ.get("PYTHONPATH"))
           print("DATABASE_URL=", os.environ.get("DATABASE_URL"))
+          sys.path.insert(0, os.getcwd())
           import app
           print("✅ Imported 'app' OK")
           PY
