@@ -10,7 +10,7 @@ depends_on = None
 
 def upgrade():
     # task
-    op.create_index("ix_task_list_id", "task", ["list_id"], unique=False)
+    from sqlalchemy import inspect as __insp, text as __text  # safe if duplicated  __bind = op.get_bind() __name = op.f("ix_task_list_id") if __bind.dialect.name == "sqlite":     op.execute(__text(f"CREATE INDEX IF NOT EXISTS {__name} ON task (list_id)")) else:     if __name not in { i["name"] for i in __insp(__bind).get_indexes("task") }:         op.create_index(__name, "task", ["list_id"], unique=False)
     op.create_index("ix_task_status", "task", ["status"], unique=False)
     op.create_index("ix_task_created_at", "task", ["created_at"], unique=False)
 
