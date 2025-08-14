@@ -1,4 +1,6 @@
-﻿name: Alembic Diff Check
+# File: .github/workflows/alembic-diff-check.yml | Version: 1.1 | Path: /.github/workflows/alembic-diff-check.yml
+name: Alembic Diff Check
+
 on:
   push:
     branches: [ main, housekeeping-phase5 ]
@@ -10,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: ${{ github.workspace }}
-      DATABASE_URL: sqlite:///./test.db
+      DATABASE_URL: sqlite:///./_ci_alembic.db
 
     steps:
       - name: Checkout
@@ -24,19 +26,28 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt || true
-          pip install -r requirements-dev.txt || true
           pip install alembic SQLAlchemy aiosqlite
+          test -f requirements.txt && pip install -r requirements.txt || true
+          test -f requirements-dev.txt && pip install -r requirements-dev.txt || true
 
-      - name: Debug imports
+      - name: Sanity & environment
         run: |
           python - <<'PY'
           import os, sys
-          print("cwd=", os.getcwd())
+          sys.path.insert(0, os.getcwd())
+          import app
+          print("✅ app import OK")
           print("PYTHONPATH=", os.environ.get("PYTHONPATH"))
-          if os.getcwd() not in sys.path: sys.path.insert(0, os.getcwd())
-          import app; print("✅ Imported 'app' OK")
+          print("DATABASE_URL=", os.environ.get("DATABASE_URL"))
           PY
+          alembic --version
+          rm -f _ci_alembic.db || true
+          ls -la
 
-      - name: Upgrade DB
-        run: python -m alembic upgrade head
+      - name: Migrate (fresh DB)
+        run: |
+          set -euxo pipefail
+          alembic heads
+          alembic current || true
+          alembic upgrade head
+          alembic current
