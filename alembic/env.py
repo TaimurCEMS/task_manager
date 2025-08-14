@@ -1,64 +1,53 @@
-# File: alembic/env.py | Version: 1.0 | Title: Alembic environment (autogenerate-ready)
+# File: alembic/env.py | Version: 1.2 | Path: /alembic/env.py
+# CI-safe Alembic env: uses DATABASE_URL if set; falls back to alembic.ini
 
 from logging.config import fileConfig
-
-from sqlalchemy import engine_from_config, pool
-
-from alembic import context
 import os
 import sys
 
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
+from sqlalchemy import create_engine, pool
+from alembic import context
 
-# Interpret the config file for Python logging.
+# Ensure repo root is importable (so `app.*` works in CI)
+sys.path.insert(0, os.getcwd())
+
+# --- Alembic config ---
 config = context.config
-if config.config_file_name is not None:  # pragma: no cover
+if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Pull DB URL from env if provided
-db_url = os.getenv("DATABASE_URL")
-if db_url:
-    config.set_main_option("sqlalchemy.url", db_url)
+# Prefer CI env var; otherwise use alembic.ini's sqlalchemy.url
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    config.get_main_option("sqlalchemy.url", "sqlite:///./app.db"),
+)
 
-# Target metadata
-from app.db.base_class import Base  # noqa: E402
+# Import your canonical Base for target_metadata
+from app.db.base_class import Base  # adjust if your Base lives elsewhere
 
 target_metadata = Base.metadata
 
-
-def run_migrations_offline():
+def run_migrations_offline() -> None:
+    url = DATABASE_URL
     context.configure(
-        url=config.get_main_option("sqlalchemy.url"),
+        url=url,
         target_metadata=target_metadata,
         literal_binds=True,
-        dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        dialect_opts={"paramstyle": "named"},
     )
     with context.begin_transaction():
         context.run_migrations()
 
-
-def run_migrations_online():
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-        future=True,
-    )
-
+def run_migrations_online() -> None:
+    url = DATABASE_URL
+    connectable = create_engine(url, poolclass=pool.NullPool, future=True)
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            compare_type=True,
-        )
+        context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
         with context.begin_transaction():
             context.run_migrations()
 
-
-if context.is_offline_mode():  # pragma: no cover
+if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()

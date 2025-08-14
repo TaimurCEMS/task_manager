@@ -1,14 +1,69 @@
+phase-5-filtering
+# File: .github/workflows/ci.yml | Version: 1.2 | Title: CI â€” lint, tests, coverage, security
+
+main
 name: CI
 
 on:
   push:
+phase-5-filtering
+    branches: [ main, master ]
+
     branches: [ main, housekeeping-phase5 ]
+main
   pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
 
 jobs:
+phase-5-filtering
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PYTHONWARNINGS: default
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+  - name: Lint
+    run: |
+      python -m pip install --upgrade pip
+      python -m pip install ruff==0.12.8
+      ruff --version
+      ruff format --check .
+      ruff check .
+      - name: Run tests
+        env:
+          DATABASE_URL: "sqlite:///./app.db"
+          SECRET_KEY: "ci-secret"
+        run: |
+          pytest --maxfail=1 --cov=app --cov-report=term-missing --cov-fail-under=85
+
+      - name: Security audit (pip-audit)
+        continue-on-error: true
+        run: |
+          set -e
+          pip-audit -r requirements.txt || echo "::warning::pip-audit found issues (non-blocking in CI)"
+
+      - name: Static analysis (bandit)
+        run: bandit -q -r app -c .bandit
+
   sanity:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: echo "CI is working"
+main
