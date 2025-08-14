@@ -1,10 +1,21 @@
 # File: alembic/env.py | Version: 1.0 | Title: Alembic environment (autogenerate-ready)
+phase-5-filtering
 import os
+
+main
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config, pool
 
 from alembic import context
+phase-5-filtering
+import os
+import sys
+
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+main
 
 # Interpret the config file for Python logging.
 config = context.config

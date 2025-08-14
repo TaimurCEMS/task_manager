@@ -1,13 +1,21 @@
+phase-5-filtering
 # File: .github/workflows/ci.yml | Version: 1.2 | Title: CI â€” lint, tests, coverage, security
+
+main
 name: CI
 
 on:
   push:
+phase-5-filtering
     branches: [ main, master ]
+
+    branches: [ main, housekeeping-phase5 ]
+main
   pull_request:
     branches: [ main, master ]
 
 jobs:
+phase-5-filtering
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -52,3 +60,10 @@ jobs:
 
       - name: Static analysis (bandit)
         run: bandit -q -r app -c .bandit
+
+  sanity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "CI is working"
+main
