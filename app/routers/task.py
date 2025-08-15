@@ -1,4 +1,4 @@
-# File: /app/routers/task.py | Version: 2.1 | Title: Tasks, Subtasks, Comments Router (+assignees upsert + list search)
+# File: /app/routers/task.py | Version: 2.2 | Title: Tasks, Subtasks, Comments Router (+assignees upsert + list search)
 from __future__ import annotations
 
 import logging
@@ -35,9 +35,17 @@ def create_task(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    space = crud_core.get_space(db, data.space_id)
+    # FIX: Add validation to ensure the parent List exists before creation.
+    parent_list = crud_core.get_list(db, data.list_id)
+    if not parent_list:
+        raise HTTPException(status_code=404, detail="List not found")
+
+    # The original space check is still valid, but can now be derived from the trusted parent_list.
+    space = crud_core.get_space(db, parent_list.space_id)
     if not space:
-        raise HTTPException(status_code=404, detail="Space not found")
+        # This is a data integrity issue if a list exists without a space, but it's a good safeguard.
+        raise HTTPException(status_code=404, detail="Parent space not found")
+
     require_role(
         db,
         user_id=str(current_user.id),
