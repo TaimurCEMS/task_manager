@@ -10,9 +10,11 @@ down_revision = ("0001_add_indexes", "91677c79a0aa")  # <-- from your CI log
 branch_labels = None
 depends_on = None
 
+
 def upgrade() -> None:
     # No schema changes; this revision only merges divergent history.
     pass
+
 
 def downgrade() -> None:
     # Splitting a merge is not supported.
