@@ -1,4 +1,4 @@
-# File: app/core/logging.py | Version: 1.0 | Title: App logging configuration (JSON optional)
+# File: /app/core/logging.py | Version: 1.1 | Title: App logging configuration (quiet httpx; JSON optional)
 import json
 import logging
 import logging.config
@@ -47,6 +47,9 @@ def configure_logging() -> None:
             "level": level,
         },
         "loggers": {
+            # Quiet overly chatty libraries during tests to avoid closed-stream errors
+            "httpx": {"level": "WARNING", "propagate": False},
+            "httpcore": {"level": "WARNING", "propagate": False},
             "uvicorn": {"level": level},
             "uvicorn.error": {"level": level},
             "uvicorn.access": {"level": level},
@@ -55,8 +58,9 @@ def configure_logging() -> None:
     }
 
     logging.config.dictConfig(config)
+
     if use_json:
-        # Wrap LogRecord into JSON message (simple, zero-deps)
+
         class JsonConsole(logging.Formatter):
             def format(self, record: logging.LogRecord) -> str:
                 base = {
@@ -68,4 +72,6 @@ def configure_logging() -> None:
                     base["exc_info"] = self.formatException(record.exc_info)
                 return json.dumps(base, ensure_ascii=False)
 
-        logging.getLogger().handlers[0].setFormatter(JsonConsole())
+        # Apply JSON formatter safely to all root handlers
+        for h in logging.getLogger().handlers:
+            h.setFormatter(JsonConsole())

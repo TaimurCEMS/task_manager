@@ -5,13 +5,18 @@ import sqlalchemy as sa  # noqa: F401
 
 # revision identifiers, used by Alembic.
 revision = "merge_20250814"
-down_revision = ("0001_add_indexes", "016f77c94aa0")  # e.g., ("0001_add_indexes", "91677c79a0aa")
+down_revision = (
+    "0001_add_indexes",
+    "016f77c94aa0",
+)  # e.g., ("0001_add_indexes", "91677c79a0aa")
 branch_labels = None
 depends_on = None
+
 
 def upgrade():
     # No-op: this revision only merges divergent history.
     pass
+
 
 def downgrade():
     # Splitting merged history is not supported.

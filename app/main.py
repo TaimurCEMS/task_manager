@@ -1,8 +1,9 @@
-# File: app/main.py | Version: 1.7 | Title: FastAPI App (safe router includes + optional error handlers)
+# File: /app/main.py | Version: 1.10 | Title: FastAPI App (router includes + Saved Views Apply + quieter multipart logs)
 from __future__ import annotations
 
 import importlib
 import importlib.util
+import logging
 
 from fastapi import FastAPI
 
@@ -13,6 +14,8 @@ from app.observability.sentry import init_sentry_if_configured
 
 # Initialize logging & observability
 configure_logging()
+# Silence very verbose multipart parser logs to avoid pytest "closed file" noise
+logging.getLogger("python_multipart.multipart").setLevel(logging.WARNING)
 init_sentry_if_configured()
 
 # App
@@ -45,7 +48,9 @@ include_if_exists("app.routers.comments")
 include_if_exists("app.routers.watchers")
 include_if_exists("app.routers.time_tracking")
 include_if_exists("app.routers.auth_extras")
-include_if_exists("app.routers.health")  # <-- added
+include_if_exists("app.routers.health")
+include_if_exists("app.routers.views")  # Saved Views CRUD (collection: /views)
+include_if_exists("app.routers.views_apply")  # Apply a Saved View to tasks
 
 # Optional standardized error responses
 if getattr(settings, "ENABLE_STD_ERRORS", False):
